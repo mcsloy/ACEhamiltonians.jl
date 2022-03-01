@@ -4,6 +4,8 @@ using ACE
 using ACE: PolyTransform, SphericalMatrix, PIBasis, SymmetricBasis,
            SimpleSparseBasis, Utils.RnYlm_1pbasis, CylindricalBondEnvelope, 
            Categorical1pBasis
+using ACEhamiltonians.Parameters
+
 
 export Data, Params, OnsiteBasis, OffsiteBasis, TBModel, TBModelWhole, OnModelWhole, OffModelWhole, ison, isoff, get_sites
 
@@ -36,7 +38,7 @@ function get_sites(data::Data{T}) where {T}
       return sum(length.(data.index))
    end
 end
-ison(data::Data{T}) where {T} = (T == Int64 || T == Vector{Int64})
+Parameters.ison(data::Data{T}) where {T} = (T == Int64 || T == Vector{Int64})
 isoff(data::Data{T}) where {T} = (T == Tuple{Int64,Int64} || T == Vector{Tuple{Int64,Int64}})
 
 """
@@ -94,7 +96,7 @@ function Params(rcutset::Union{Float64,Vector{Float64},Vector{Matrix{Float64}}},
    end
 end
 
-ison(par::Params) = (length(par.rcutset) == 6)
+Parameters.ison(par::Params) = (length(par.rcutset) == 6)
 isoff(par::Params) = (length(par.rcutset) == 9)
 ## Onsite basis
 struct OnsiteBasis
@@ -213,7 +215,7 @@ struct OffModelWhole <: TBModelWhole
    ModelDD::Vector{TBModel}
 end
 
-ison(model::TBModelWhole) = ison(model.params)
+Parameters.ison(model::TBModelWhole) = ison(model.params)
 isoff(model::TBModelWhole) = isoff(model.params)
 
 ## Experiment code that hacked from ACE.jl

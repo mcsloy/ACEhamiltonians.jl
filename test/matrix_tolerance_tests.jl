@@ -104,17 +104,14 @@ function predict_values(H_osb, Rs, on_site=True)
         Φ, Y, Mean = ACEhamiltonians.Fitting.assemble_ls(basis, H_osb, Rs, i, j, "on")
         coefficients = solve_ls(Φ, Y, 1e-7, Γ, "LSQR")
 
-        # Build and train the model
-        model = TBModel(basis.basis, coefficients, Mean)
-
         for Rs_atom in Rs
             # Create a descriptor for the chemical environment around the atom.
             cfg = ACEConfig(Rs_atom)
 
             # Construct and evaluate the on-site basis
-            A = evaluate(model.basis, cfg)
+            A = evaluate(basis.basis, cfg)
             B = evaluateval_real(A)
-            append!(values, (model.coeffs' * B) + model.mean)
+            append!(values, (coefficients' * B) + Mean)
     
         end
     end
