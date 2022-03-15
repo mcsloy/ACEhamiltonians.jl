@@ -60,8 +60,8 @@ Todo:
 
 """
 mutable struct Basis
-    basis::S where S<:SymmetricBasis
-    id::T where T<:Tuple
+    basis<:SymmetricBasis
+    id<:Tuple
     coefficients::Union{Array, Nothing}
     mean::Union{Real, Nothing}
 
@@ -76,47 +76,6 @@ function Base.show(io::IO, basis::Basis)
     print(io, "Basis(fitted=$(~isnothing(basis.mean)))")
 end
 
-
-"""Returns a boolean indicating if the basis instance represents an on-site interaction."""
-Parameters.ison(basis::Basis) = length(basis.id) == 3
-
-"""
-_filter_bases(basis, type)
-
-Helper function to retrieve specific basis function information out of a
-`Basis` instance.
-
-Arguments:
-- `basis::Basis`: basis instance from which function is to be extracted.
-- `type::DataType`: type of the basis functions to extract; e.g. `CylindricalBondEnvelope`.
-"""
-function _filter_bases(basis::Basis, ::T) where T<:DataType
-    functions = filter(i->i isa T, basis.basis.pibasis.basis1p.bases)
-    if length(bases) == 0
-        error("Could not locate basis function matching the supplied type")
-    elseif length(bases) ≥ 2
-        @warn "Multiple matching basis functions found, only the first will be returned"
-    end
-    return functions[1]
-end
-
-
-"""Extract and return the radial component of a `Basis` instance."""
-radial(basis::Basis) = _filter_bases(basis, ACE.Rn1pBasis)
-
-"""Extract and return the angular component of a `Basis` instance."""
-angular(basis::Basis) = _filter_bases(basis, ACE.Ylm1pBasis)
-
-"""Extract and return the categorical component of a `Basis` instance."""
-categorical(basis::Basis) = _filter_bases(basis, ACE.Categorical1pBasis)
-
-"""Extract and return the bond envelope component of a `Basis` instance."""
-envelope(basis::Basis) = _filter_bases(basis, ACE.BondEnvelope)
-
-
-function gather_data(basis::Basis, matrix, atoms)
-    
-end
 
 
 struct Model
@@ -139,45 +98,34 @@ struct Model
         on_sites = Dict{NTuple{3, keytype(basis_definition)}, Basis}()
         off_sites = Dict{NTuple{4, keytype(basis_definition)}, Basis}()
         
-        # Sorting the basis definition makes avoiding interaction doubling easier.
-        # That is to say, we don't create models for both H-C and C-H interactions
-        # as they represent the same thing.
-        basis_definition_sorted = sort(collect(basis_definition), by=first) 
-
         # Loop over all species defined in the basis definition
-        for (zₙ, (zᵢ, shellsᵢ)) in enumerate(basis_definition_sorted)
+        for (zᵢ, shellsᵢ) in basis_definition
             # Construct on-site models for each unique shell pair (note ℓᵢ-ℓⱼ = ℓⱼ-ℓᵢ)
             for (n₁, ℓ₁) in enumerate(shellsᵢ)
                 for (n₂, ℓ₂) in enumerate(shellsᵢ[n₁:end])
                     # Helper function reduce code repetition
                     f = i -> getfield(on_site_parameters, i)[zᵢ][n₁, n₂+n₁-1]
 
-                    ace_basis = on_site_ace_basis(ℓ₁, ℓ₂,
+                    on_sites[(zᵢ, ℓ₁, ℓ₂)] = on_site_basis(ℓ₁, ℓ₂,
                         f.((:ν, :deg, :e_cutₒᵤₜ, :e_cutᵢₙ))...)
-                    
-                    on_sites[(zᵢ, n₁, n₂+n₁-1)] = Basis(ace_basis, (zᵢ, n₁, n₂))
 
                 end
             end
 
-            # Loop over all possible unique species pair combinations
-            for (zⱼ, shellsⱼ) in basis_definition_sorted[zₙ:end]
-    
+            # Loop over all possible pairwise species combinations
+            for (zⱼ, shellsⱼ) in basis_definition
+            
                 # Construct the off site-models
                 for (n₁, ℓ₁) in enumerate(shellsᵢ), (n₂, ℓ₂) in enumerate(shellsⱼ)
-                    
-                    # Ignore symmetrically equivalent homoatomic interactions; i.e. as
-                    # Cₛ-Cₚ and Cₚ-Cₛ are the same interaction only one model is needed.
-                    if zᵢ == zⱼ && n₁ > n₂
-                        continue
-                    end
+                    # The off site keys (zᵢ,zⱼ) & (zⱼ,zᵢ) represent the same interaction;
+                    # thus only one is present in off_site_parameters. As the lowest
+                    # atomic number is given first the key must be sorted.
+                    f₁ = zᵢ <= zⱼ ? (zᵢ, zⱼ) : (zⱼ, zᵢ)
+                    f₂ = zᵢ <= zⱼ ? [n₁, n₂] : [n₂, n₁]
+                    f = i -> getfield(off_site_parameters, i)[f₁][f₂...]
 
-                    f = i -> getfield(off_site_parameters, i)[(zᵢ, zⱼ)][n₁, n₂]
-
-                    ace_basis = off_site_ace_basis(ℓ₁, ℓ₂,
+                    off_sites[(zᵢ, zⱼ, ℓ₁, ℓ₂)] = off_site_basis(ℓ₁, ℓ₂,
                         f.((:ν, :deg, :e_cutₒᵤₜ, :e_cutᵢₙ, :bond_cut, :λₙ, :λₗ))...)
-
-                    off_sites[(zᵢ, zⱼ, n₁, n₂)] = Basis(ace_basis, (zᵢ, zⱼ, n₁, n₂))
                 end
             end
 
@@ -216,7 +164,6 @@ function Base.show(io::IO, model::Model)
 end
 
 @doc raw"""
-###### REWRITE DOCSTRING AS THIS NOW RETURNS AN ACE BASE
 
     on_site_basis(ℓ₁, ℓ₂, ν, deg, e_cutₒᵤₜ[, e_cutᵢₙ])
 
@@ -241,7 +188,7 @@ then bases must be instantiated manually.
 
 
 # Todo
-- add return documentation
+- Give return statement
 - as many simplifications where made here there is a real chance that the basis
   generated by this method might return gibberish. So tolerance checks must be
   performed before this can be considered operational.
@@ -251,19 +198,18 @@ then bases must be instantiated manually.
 
 # Developers Notes
 """
-function on_site_ace_basis(ℓ₁::I, ℓ₂::I, ν::I, deg::I, e_cutₒᵤₜ::F, e_cutᵢₙ::F=2.5
+function on_site_basis(ℓ₁::I, ℓ₂::I, ν::I, deg::I, e_cutₒᵤₜ::F, e_cutᵢₙ::F=2.5
     ) where {I<:Integer, F<:AbstractFloat}
     # Build i) a matrix indicating the desired sub-block shape, ii) the one
     # particle Rₙ·Yₗᵐ basis describing the environment, & iii) the basis selector.
     # Then instantiate the SymmetricBasis required by the Basis structure.
-    return SymmetricBasis(
+    return Basis(SymmetricBasis(
         SphericalMatrix(ℓ₁, ℓ₂; T=ComplexF64),
         RnYlm_1pbasis(maxdeg=deg, r0=e_cutᵢₙ, rcut=e_cutₒᵤₜ),
-        SimpleSparseBasis(ν, deg))
+        SimpleSparseBasis(ν, deg)))
 end
 
 @doc raw"""
-###### REWRITE DOCSTRING AS THIS NOW RETURNS AN ACE BASE
 
     off_site_basis(ℓ₁, ℓ₂, ν, deg, b_cut[,e_cutₒᵤₜ, e_cutᵢₙ, λₙ, λₗ])
 
@@ -295,7 +241,7 @@ be manually instantiated if more fine-grained control is desired.
 - Identify what the filter function is doing and documenting it.
 
 """
-function off_site_ace_basis(ℓ₁::I, ℓ₂::I, ν::I, deg::I, b_cut::F, e_cutₒᵤₜ::F=5., e_cutᵢₙ::F=2.5,
+function off_site_basis(ℓ₁::I, ℓ₂::I, ν::I, deg::I, b_cut::F, e_cutₒᵤₜ::F=5., e_cutᵢₙ::F=2.5,
     λₙ::F=.5, λₗ::F=.5) where {I<:Integer, F<:AbstractFloat}
 
     # Bond envelope which controls which atoms are seen by the bond.
@@ -308,11 +254,11 @@ function off_site_ace_basis(ℓ₁::I, ℓ₂::I, ν::I, deg::I, b_cut::F, e_cut
     # The basis upon which the above entities act.
     RnYlm = RnYlm_1pbasis(maxdeg=deg, r0=e_cutᵢₙ, rcut=cutoff_radialbasis(env))
     
-    return SymmetricBasis(
+    return Basis(SymmetricBasis(
         SphericalMatrix(ℓ₁, ℓ₂; T=ComplexF64),
         RnYlm * env * discriminator,
         SimpleSparseBasis(ν + 1, deg),
-        filterfun=bb -> filter_offsite_be(bb, deg, λₙ, λₗ))
+        filterfun=bb -> filter_offsite_be(bb, deg, λₙ, λₗ)))
 end
 
 
@@ -420,28 +366,9 @@ julia> off_site_sym_basis = SymmetricBasis(
 #     return A, Y, Mean
 #  end
 
-struct Data
-    matrix
-    atomic_numbers
-end
 
-
-function fit!(basis::Basis, data::Data)
-    # The first task is to identify and extract the relevant training data. 
-    if ison(basis)
-        z = basis.id[1]
-        for (mat, zₛ) in zip(data.matrix, data.atomic_numbers)
-            findall(==(z), zₛ)
-
-        end
-
-    else
-    end
-    # Task 1 gather the required data
-    # Task 2 construct the least squares problem
-    # Task 3 solve the least squares problem
-    # Task 4 update the basis entity
-    # assemble_least_squares(basis, data)
+function fit!(basis::Basis, data)
+    assemble_least_squares(basis, )
 end
 
 # function fit!(model::Model, data)

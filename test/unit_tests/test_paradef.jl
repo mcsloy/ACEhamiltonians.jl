@@ -109,15 +109,18 @@ Test the ``ParaDef`` structure and its associated methods.
         # with site-autodetect enabled "auto". This test is site agnostic and thus
         # does not need to be repeated in the off-site test section.  
         @testset "Global/site-autodetection incompatibility" begin
-            @test_throws AssertionError _parameter_expander(1, basis, "auto")
+            error = ErrorException("Site cannot be auto-resolve for global declarations.")
+            @test_throws error _parameter_expander(1, basis, "auto")
         end
 
         @testset "Malformed parameter matrix specification" begin
         # Ensure that malformed species deceleration are caught and an error is thrown.
             for (site, key) in zip(("on", "off"),(6, (6,6)))
                 @testset "$(uppercasefirst(site))-site" begin
-                    @test_throws AssertionError _parameter_expander(
-                        Dict(key=>ones(3,3)), Dict(6=>[0, 1]), site)
+                    error = ErrorException(
+                        "Malformed $site-site parameter matrix (3×3) given for $(join(key,"-")); expected"*
+                        " matrix shapes are 2×2 (azimuthal) & 2×2 (full).") 
+                    @test_throws error _parameter_expander(Dict(key=>ones(3,3)), Dict(6=>[0, 1]), site)
                 end
             end
         end
@@ -157,7 +160,9 @@ end
             # valid. Thus an error should be raised if one is encountered. 
             @testset "Block asymmetric parameter matrices" begin
                 p_i, p_f = Dict(6=>[1 2; 3 4]), Dict(6=>[1. 2.; 3. 4.])
-                @test_throws AssertionError ParaDef(p_i, p_i, p_f, p_f)
+                error = ErrorException("Non-symmetric parameter matrices not permitted "*
+                                       "for on-site interactions: $(join([6], ", "))")
+                @test_throws error ParaDef(p_i, p_i, p_f, p_f)
             end
         end
 
@@ -177,7 +182,9 @@ end
             # are symmetrically equivalent.
             @testset "Block symmetrically equivalent interactions" begin
                 p_i, p_f = Dict((6,1)=>[1;;], (1,6)=>[1;;]), Dict((6,1)=>[1.;;], (1,6)=>[1.;;])
-                @test_throws AssertionError ParaDef(p_i, p_i, p_f, p_f, p_f, p_f, p_f)
+                error = ErrorException("Off-site dictionaries must not contain symmetrically "*
+                                       "equivalent keys; i.e. if key (1, 6) is present then (6, 6) cannot.")
+                @test_throws error ParaDef(p_i, p_i, p_f, p_f, p_f, p_f, p_f)
             end
 
             # Keys should be sorted so that the lowest atomic number comes first. This
@@ -212,7 +219,9 @@ end
 
         # Auto site key with global only
         @testset "Global/site-autodetection incompatibility" begin
-            @test_throws AssertionError ParaDef(Dict(1=>[0]), 1, 1)
+            error = ErrorException("Site cannot be auto-resolve if all mutual arguments are"*
+            " specified globally; please provide the \"site\" keyword argument.")
+            @test_throws error ParaDef(Dict(1=>[0]), 1, 1)
         end
 
         # Invalid value given for site key
