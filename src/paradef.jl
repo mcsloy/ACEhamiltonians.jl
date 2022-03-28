@@ -1,7 +1,13 @@
 module Parameters
 import ACEbase.FIO: read_dict, write_dict
+import ACEbase
+using ACEhamiltonians
 
 export ParaDef, show, ison, read_dict, write_dict
+
+# Todo:
+#   - Refactor read/write_dict methods to make use of vector and matrix
+#     conversion methods already present in ACEbase. 
 
 # Type definition used to simplify ParaDef construction
 TP = Dict{K, Matrix{V}} where {K, V}
@@ -295,9 +301,38 @@ end
 
 # These read and write functions allow for ParaDict⇄Dict interconversion. Such methods
 # are most commonly used when writing to and from Json files.
-read_dict(::Val{:ParaDef}, dict::Dict)::ParaDef = ParaDef(dict)
-write_dict(p::ParaDef) = Dict("__id__"=>"ParaDef",
-                              ("$f"=>getfield(p, f) for f in fieldnames(ParaDef))...)
+# read_dict(::Val{:ParaDef}, dict::Dict)::ParaDef = ParaDef(dict)
+# ACEbase.write_dict(p::ParaDef) = Dict("__id__"=>"ParaDef",
+#                               ("$f"=>getfield(p, f) for f in fieldnames(ParaDef))...)
+
+function ACEbase.write_dict(p::ParaDef)
+    # Formats entity as a matrix if appropriate (null-op if v==nothing)
+    from_mat(v) = isnothing(v) ? v : Dict(k=>write_dict(vv) for (k, vv) in v)
+    return Dict(
+        "__id__"=>"ParaDef",
+        ("$f"=>from_mat(getfield(p, f)) for f in fieldnames(ParaDef))...)
+end
+
+function ACEbase.read_dict(::Val{:ParaDef}, dict::Dict)::ParaDef
+    # Matrix objects are read from JSON files as Vector{Vector{Any}} instances. This
+    # function is designed to convert such instances into matrices. 
+    to_mat(v) = isnothing(v) ? v : read_dict(v)
+
+    # Keys are stored a strings and must be converted back to integers
+    format(data) = Dict(parse_key(k)=>to_mat(v) for (k, v) in data)
+
+    on_site = isnothing(get(dict, "bond_cut", nothing)) 
+    return ParaDef(Dict(
+        "ν"=>format(dict["ν"]),
+        "deg"=>format(dict["deg"]),
+        "e_cutₒᵤₜ"=>format(dict["e_cutₒᵤₜ"]),
+        "e_cutᵢₙ"=>format(dict["e_cutᵢₙ"]),
+        "bond_cut"=>on_site ? nothing : format(dict["bond_cut"]),
+        "λₙ"=>on_site ? nothing : format(dict["λₙ"]),
+        "λₗ"=>on_site ? nothing : format(dict["λₗ"]),
+    ))
+end
+
 
 """
     ison(para_def)

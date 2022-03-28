@@ -190,6 +190,7 @@ function get_state(at,i::Int64,j::Int64,env::BondEnvelope)
    #st = [ State(rr = neigh_i[2][j], rr0 = neigh_i[2][j], be=:bond) for j in set]
    for (jj, rj) in enumerate(neigh_i[2])
       st_temp = State(rr = rj, rr0 = rr, be=:env)
+      # st_temp = State(rr = rj, be=:env)
       if rj≠rr && filter(env,st_temp)
          st = [st; st_temp]
       end

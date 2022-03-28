@@ -1,12 +1,23 @@
-using HDF5
+module Bases
+# using HDF5
+using HDF5: Group
 using ACE
 using ACE: SymmetricBasis, SphericalMatrix, Utils.RnYlm_1pbasis, SimpleSparseBasis,
            CylindricalBondEnvelope, Categorical1pBasis, cutoff_radialbasis
-
+import ACEbase
 using ACEhamiltonians
-using ACEhamiltonians.Parameters
+# using ACEhamiltonians.Parameters
+
+
+export Basis, BasisDef, radial, angular, categorical, envelope, Model, on_site_ace_basis, off_site_ace_basis, filter_offsite_be
 """
 TODO:
+    - If two or more basis functions have the same parameters and represent interactions
+      between identical azimuthal pairs then they should share the same `SymmetricBasis`
+      object. This will reduce memory and database size and will improve performance.
+      However, the read/write_dict functions for the `Model` structure will need some
+      subroutines to smartly (re)store bases with `SymmetricBasis` objects. The same should
+      be true of the State information of like atoms.
     - Add show method do the basis classes.
     - Figure out what is going on with filter_offsite_be and its arguments.
     - A warning should perhaps be given if no filter function is given when one is
@@ -15,22 +26,10 @@ TODO:
     - Might be worth adding descriptive info to the bases; such as what shell does
       this correspond to, what azimuthal number, etc. This could be optional.
     - Add ison method for the basis entities.
+    - Improve typing for the Model structure.
+    - A method for storing tuples as keys in json needs to be created.
+    - parse_key should be abstracted.
 """
-
-"""
-    BasisDef(atomic_number => [ℓ₁, ..., ℓᵢ], ...)
-
-Provides information about the basis set by specifying the azimuthal quantum numbers (ℓ)
-of each shell on each species. Dictionary is keyed by atomic numbers & valued by vectors
-of ℓs i.e. `Dict{atomic_number, [ℓ₁, ..., ℓᵢ]}`. 
-
-A minimal basis set for hydrocarbon systems would be `BasisDef(1=>[0], 6=>[0, 0, 1])`.
-This declares hydrogen atoms as having only a single s-shell and carbon atoms as having
-two s-shells and one p-shell.
-"""
-BasisDef = Dict{I, Vector{I}} where I<:Integer
-
-
 
 """
     Basis(basis[, coefficients, mean])
@@ -56,6 +55,7 @@ Todo:
     - Describe how they can be fitted (once the functions are in place)
     - Add a catch to the predictor to disallow predictions to be be made using
       basis instances that have not yet be fitted.
+    - Check if `mean` is a scalar or vector and update read_dict as needed.
 
 
 """
@@ -63,12 +63,60 @@ mutable struct Basis
     basis::S where S<:SymmetricBasis
     id::T where T<:Tuple
     coefficients::Union{Array, Nothing}
-    mean::Union{Real, Nothing}
+    mean::Union{Array, Nothing}
 
     function Basis(basis, id)
         new(basis, id, nothing, nothing)
     end
+
+    function Basis(basis, id, coefficients, mean)
+        new(basis, id, coefficients, mean)
+    end
+
 end
+
+Base.:(==)(x::Basis, y::Basis) = (
+    x.id == y.id && x.coefficients == y.coefficients
+    && x.mean == y.mean && x.basis == y.basis)
+
+    
+function ACEbase.write_dict(b::Basis)
+    # Handle parsing of entities which may be arrays or `nothing`
+    p(i) = isnothing(i) ? i : write_dict(i)
+    return Dict(
+    "__id__"=>"HBasis",
+    "basis"=>write_dict(b.basis),
+    "id"=>b.id,
+    "coefficients"=>p(b.coefficients),
+    "mean"=>p(b.mean))
+end
+
+function ACEbase.read_dict(::Val{:HBasis}, dict::Dict)::Basis
+    # Handle parsing of entities which may be arrays or `nothing`
+    p(i) = isnothing(i) ? i : read_dict(i)
+    return Basis(
+        read_dict(dict["basis"]),
+        Tuple(dict["id"]),
+        p(dict["coefficients"]),
+        p(dict["mean"]))
+    
+end
+
+# ACEbase.write_dict(b::Basis) = Dict(
+#     "__id__"=>"HBasis",
+#     "basis"=>write_dict(b.basis),
+#     "id"=>b.id,
+#     "coefficients"=>b.coefficients,
+#     "mean"=>b.mean)
+
+# ACEbase.read_dict(::Val{:HBasis}, dict::Dict)::Basis = Basis(
+#     read_dict(dict["basis"]),
+#     Tuple(dict["id"]),
+#     isnothing(dict["coefficients"]) ? nothing : Vector{Float64}(dict["coefficients"]),
+#     isnothing(dict["mean"]) ? nothing : Vector{Float64}(dict["mean"])
+# )
+
+
 
 # Todo: this is mostly to stop terminal spam but needs to be updated
 #       with more meaningful information later on.
@@ -90,11 +138,11 @@ Arguments:
 - `basis::Basis`: basis instance from which function is to be extracted.
 - `type::DataType`: type of the basis functions to extract; e.g. `CylindricalBondEnvelope`.
 """
-function _filter_bases(basis::Basis, ::T) where T<:DataType
+function _filter_bases(basis::Basis, T)
     functions = filter(i->i isa T, basis.basis.pibasis.basis1p.bases)
-    if length(bases) == 0
+    if length(functions) == 0
         error("Could not locate basis function matching the supplied type")
-    elseif length(bases) ≥ 2
+    elseif length(functions) ≥ 2
         @warn "Multiple matching basis functions found, only the first will be returned"
     end
     return functions[1]
@@ -113,12 +161,7 @@ categorical(basis::Basis) = _filter_bases(basis, ACE.Categorical1pBasis)
 """Extract and return the bond envelope component of a `Basis` instance."""
 envelope(basis::Basis) = _filter_bases(basis, ACE.BondEnvelope)
 
-
-function gather_data(basis::Basis, matrix, atoms)
-    
-end
-
-
+# on_site_models should be renamed to on_site_bases
 struct Model
     # on_site_models::Dict{NTuple{4, I}, Basis} where I<:Integer  # z₁-z₂-ℓ₁-ℓ₂
     # off_site_models::Dict{NTuple{3, I}, Basis}  where I<:Integer # z-ℓ₁-ℓ₂
@@ -129,6 +172,11 @@ struct Model
     off_site_models
     on_site_parameters
     off_site_parameters
+
+    function Model(on_site_models, off_site_models,
+        on_site_parameters::ParaDef, off_site_parameters::ParaDef)
+        new(on_site_models, off_site_models, on_site_parameters, off_site_parameters)
+    end
     
     function Model(basis_definition::BasisDef, on_site_parameters::ParaDef,
                    off_site_parameters::ParaDef)
@@ -155,7 +203,7 @@ struct Model
                     ace_basis = on_site_ace_basis(ℓ₁, ℓ₂,
                         f.((:ν, :deg, :e_cutₒᵤₜ, :e_cutᵢₙ))...)
                     
-                    on_sites[(zᵢ, n₁, n₂+n₁-1)] = Basis(ace_basis, (zᵢ, n₁, n₂))
+                    on_sites[(zᵢ, n₁, n₂+n₁-1)] = Basis(ace_basis, (zᵢ, n₁, n₂+n₁-1))
 
                 end
             end
@@ -186,18 +234,35 @@ struct Model
     new(on_sites, off_sites, on_site_parameters, off_site_parameters)
     end
 
-    function Model(basis_definition::BasisDef)
-        parameters = ParaDef(basis_definition)
-        Model(basis_definition, parameters)
-        
-    end
+    # function Model(basis_definition::BasisDef)
+    #     # Double check if this is really needed, document if so remove if not.
+    #     parameters = ParaDef(basis_definition)
+    #     return Model(basis_definition, parameters)
+    # end
 
-    function Model(source::HDF5.Group)
-        # Load model from HDF5 group
-        error("Not implemented")
-    end
+    # function Model(source::HDF5.Group)
+    #     # Load model from HDF5 group
+    #     error("Not implemented")
+    # end
 
 end
+
+Base.:(==)(x::Model, y::Model) = (
+    x.on_site_models == y.on_site_models && x.off_site_models == y.off_site_models
+    && x.on_site_parameters == y.on_site_parameters && x.off_site_parameters == y.off_site_parameters)
+
+ACEbase.write_dict(m::Model) = Dict(
+    "__id__"=>"HModel",
+    "on_site_models"=>Dict(k=>write_dict(v) for (k, v) in m.on_site_models),
+    "off_site_models"=>Dict(k=>write_dict(v) for (k, v) in m.off_site_models),
+    "on_site_parameters"=>write_dict(m.on_site_parameters),
+    "off_site_parameters"=>write_dict(m.off_site_parameters))
+
+ACEbase.read_dict(::Val{:HModel}, dict::Dict)::Model = Model(
+    Dict(parse_key(k)=>read_dict(v) for (k, v) in dict["on_site_models"]),
+    Dict(parse_key(k)=>read_dict(v) for (k, v) in dict["off_site_models"]),
+    read_dict(dict["on_site_parameters"]),
+    read_dict(dict["off_site_parameters"]))
 
 
 # Todo: this is mostly to stop terminal spam but needs to be updated
@@ -214,6 +279,7 @@ function Base.show(io::IO, model::Model)
 
     print(io, "Model(fitted=(on=$on, off=$off), species=($species))")
 end
+
 
 @doc raw"""
 ###### REWRITE DOCSTRING AS THIS NOW RETURNS AN ACE BASE
@@ -359,79 +425,4 @@ julia> off_site_sym_basis = SymmetricBasis(
     return ( sum( b.be == :bond for b in bb ) == 1 )
  end
 
-
-# struct Data
-#     matrix
-#     atomic_numbers
-# end
-
-
-# function fit!(basis::Basis, data::Data)
-#     # The first task is to identify and extract the relevant training data. 
-#     if ison(basis)
-#         z = basis.id[1]
-#         for (mat, zₛ) in zip(data.matrix, data.atomic_numbers)
-#             findall(==(z), zₛ)
-
-#         end
-
-#     else
-#     end
-#     # Task 1 gather the required data
-#     # Task 2 construct the least squares problem
-#     # Task 3 solve the least squares problem
-#     # Task 4 update the basis entity
-#     # assemble_least_squares(basis, data)
-# end
-
-# # function fit!(model::Model, data)
-# #     on_sites_interactions = collect(keys(model.on_site_models))
-# #     off_sites_interactions = collect(keys(model.off_site_models))
-
-# #     for (key, basis) in model.on_site_models
-# #         fit!(basis, data[key])
-# #     end
-
-# # end
-
-
-# function fit!(model::Model, data)
-
-#     # Loop over all species present
-#     for (spn, spa) in enumerate(data.species)
-        
-#         # Loop over all shells present on the first species
-
-
-#         # Loop over all possible interactions with other species
-#         for spb in data.species[spn:end]
-            
-#         end
-#     end
-
-# end
-
-
-# # BasisDef = Dict{Integer, Vector{Integer}}
-
-# # struct Model
-# #     on_site_models::Dict{NTuple{4, Integer}, Basis}  # z₁-z₂-ℓ₁-ℓ₂
-# #     off_site_models::Dict{NTuple{3, Integer}, Basis} # z-ℓ₁-ℓ₂
-# #     on_site_parameters::Parameters
-# #     off_site_parameters::Parameters
-    
-# #     function Model(basis_definition::BasisDef, on_site_parameters::ParaDef,
-# #                    off_site_parameters::ParaDef)
-
-# println("@1")
-# basis_def = Dict(1=>[0], 6=>[0,0,1])
-# println("@2")
-# pd_on = ParaDef(basis_def, 2, 8, site="on")
-# pd_off = ParaDef(basis_def, 2, 8, site="off")
-# println("@3")
-# m = Model(basis_def, pd_on, pd_off)
-# println("@4")
-
-# # v, 6, )
-
-# # get.(getfield((pd_on,), (:ν, :deg, :e_cutₒᵤₜ, :e_cutᵢₙ)), 6, nothing)
+end

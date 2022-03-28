@@ -2,8 +2,22 @@ module ACEhamiltonians
 
 using JuLIP, JSON, HDF5, Reexport
 
+include("common.jl")
+@reexport using ACEhamiltonians.Common
+
+include("io.jl")
+@reexport using ACEhamiltonians.DataIO
+
 include("paradef.jl")
 @reexport using ACEhamiltonians.Parameters
+
+include("basis.jl")
+@reexport using ACEhamiltonians.Bases
+
+# This will be renamed to Data later on once conflicts
+# with the existing code are removed. 
+include("data.jl")
+@reexport using ACEhamiltonians.DataManipulation
 
 include("struc_setting.jl")
 @reexport using ACEhamiltonians.Structure
@@ -19,8 +33,6 @@ include("predict.jl")
 
 include("dictionary.jl")
 @reexport using ACEhamiltonians.Dictionary
-
-
 
 include("tools.jl")
 
