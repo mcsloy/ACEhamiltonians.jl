@@ -99,24 +99,7 @@ function ACEbase.read_dict(::Val{:HBasis}, dict::Dict)::Basis
         Tuple(dict["id"]),
         p(dict["coefficients"]),
         p(dict["mean"]))
-    
 end
-
-# ACEbase.write_dict(b::Basis) = Dict(
-#     "__id__"=>"HBasis",
-#     "basis"=>write_dict(b.basis),
-#     "id"=>b.id,
-#     "coefficients"=>b.coefficients,
-#     "mean"=>b.mean)
-
-# ACEbase.read_dict(::Val{:HBasis}, dict::Dict)::Basis = Basis(
-#     read_dict(dict["basis"]),
-#     Tuple(dict["id"]),
-#     isnothing(dict["coefficients"]) ? nothing : Vector{Float64}(dict["coefficients"]),
-#     isnothing(dict["mean"]) ? nothing : Vector{Float64}(dict["mean"])
-# )
-
-
 
 # Todo: this is mostly to stop terminal spam but needs to be updated
 #       with more meaningful information later on.
@@ -183,52 +166,40 @@ struct Model
         # Developers Notes
         # This makes the assumption that all z₁-z₂-ℓ₁-ℓ₂ interactions are represented
         # by the same model.
+        # Discuss use of the on/off_site_cache entities
 
         on_sites = Dict{NTuple{3, keytype(basis_definition)}, Basis}()
         off_sites = Dict{NTuple{4, keytype(basis_definition)}, Basis}()
         
+        # Caching the basis functions of the functions is faster and allows ust to reuse
+        # the same basis function for similar interactions.
+        ace_basis_on = with_cache(on_site_ace_basis)
+        ace_basis_off = with_cache(off_site_ace_basis)
+
         # Sorting the basis definition makes avoiding interaction doubling easier.
         # That is to say, we don't create models for both H-C and C-H interactions
         # as they represent the same thing.
         basis_definition_sorted = sort(collect(basis_definition), by=first) 
-
-        # Loop over all species defined in the basis definition
+        
+        # Loop over all unique species pairs then over all combinations of their shells. 
         for (zₙ, (zᵢ, shellsᵢ)) in enumerate(basis_definition_sorted)
-            # Construct on-site models for each unique shell pair (note ℓᵢ-ℓⱼ = ℓⱼ-ℓᵢ)
-            for (n₁, ℓ₁) in enumerate(shellsᵢ)
-                for (n₂, ℓ₂) in enumerate(shellsᵢ[n₁:end])
-                    # Helper function reduce code repetition
-                    f = i -> getfield(on_site_parameters, i)[zᵢ][n₁, n₂+n₁-1]
-
-                    ace_basis = on_site_ace_basis(ℓ₁, ℓ₂,
-                        f.((:ν, :deg, :e_cutₒᵤₜ, :e_cutᵢₙ))...)
-                    
-                    on_sites[(zᵢ, n₁, n₂+n₁-1)] = Basis(ace_basis, (zᵢ, n₁, n₂+n₁-1))
-
-                end
-            end
-
-            # Loop over all possible unique species pair combinations
             for (zⱼ, shellsⱼ) in basis_definition_sorted[zₙ:end]
-    
-                # Construct the off site-models
                 for (n₁, ℓ₁) in enumerate(shellsᵢ), (n₂, ℓ₂) in enumerate(shellsⱼ)
+                    # Skip symmetrically equivalent interactions. 
+                    zᵢ == zⱼ && n₁ > n₂ && continue
                     
-                    # Ignore symmetrically equivalent homoatomic interactions; i.e. as
-                    # Cₛ-Cₚ and Cₚ-Cₛ are the same interaction only one model is needed.
-                    if zᵢ == zⱼ && n₁ > n₂
-                        continue
+                    if zᵢ == zⱼ 
+                        ace_basis = ace_basis_on( # On-site models
+                            ℓ₁, ℓ₂, gather(on_site_parameters, zᵢ, n₁, n₂)...)
+                        on_sites[(zᵢ, n₁, n₂)] = Basis(ace_basis, (zᵢ, n₁, n₂))
                     end
 
-                    f = i -> getfield(off_site_parameters, i)[(zᵢ, zⱼ)][n₁, n₂]
-
-                    ace_basis = off_site_ace_basis(ℓ₁, ℓ₂,
-                        f.((:ν, :deg, :e_cutₒᵤₜ, :e_cutᵢₙ, :bond_cut, :λₙ, :λₗ))...)
+                    ace_basis = ace_basis_off( # Off-site models
+                        ℓ₁, ℓ₂, gather(off_site_parameters, zᵢ, zⱼ, n₁, n₂)...)
 
                     off_sites[(zᵢ, zⱼ, n₁, n₂)] = Basis(ace_basis, (zᵢ, zⱼ, n₁, n₂))
                 end
             end
-
         end
 
     new(on_sites, off_sites, on_site_parameters, off_site_parameters)
@@ -251,18 +222,51 @@ Base.:(==)(x::Model, y::Model) = (
     x.on_site_models == y.on_site_models && x.off_site_models == y.off_site_models
     && x.on_site_parameters == y.on_site_parameters && x.off_site_parameters == y.off_site_parameters)
 
-ACEbase.write_dict(m::Model) = Dict(
-    "__id__"=>"HModel",
-    "on_site_models"=>Dict(k=>write_dict(v) for (k, v) in m.on_site_models),
-    "off_site_models"=>Dict(k=>write_dict(v) for (k, v) in m.off_site_models),
-    "on_site_parameters"=>write_dict(m.on_site_parameters),
-    "off_site_parameters"=>write_dict(m.off_site_parameters))
+function ACEbase.write_dict(m::Model)
+    # ACE bases are stored as hash values which are checked against the "model_hashes"
+    # dictionary during reading. This avoids saving multiple copies of the same object;
+    # which is common as `Basis` objects tend to share basis functions.
+    dict =  Dict(
+        "__id__"=>"HModel",
+        "on_site_models"=>Dict(k=>write_dict(v) for (k, v) in m.on_site_models),
+        "off_site_models"=>Dict(k=>write_dict(v) for (k, v) in m.off_site_models),
+        "on_site_parameters"=>write_dict(m.on_site_parameters),
+        "off_site_parameters"=>write_dict(m.off_site_parameters),
+        "model_hashes"=>merge(
+            Dict(string(hash(m.basis))=>write_dict(m.basis) for m in values(m.on_site_models)),
+            Dict(string(hash(m.basis))=>write_dict(m.basis) for m in values(m.off_site_models))))
+    
+    # Replace the models's basis objects with a hash
+    for (k, v) in dict["on_site_models"]
+        v["basis"] = string(hash(m.on_site_models[k].basis))
+    end
+    for (k, v) in dict["off_site_models"]
+        v["basis"] = string(hash(m.off_site_models[k].basis))
+    end
 
-ACEbase.read_dict(::Val{:HModel}, dict::Dict)::Model = Model(
-    Dict(parse_key(k)=>read_dict(v) for (k, v) in dict["on_site_models"]),
-    Dict(parse_key(k)=>read_dict(v) for (k, v) in dict["off_site_models"]),
-    read_dict(dict["on_site_parameters"]),
-    read_dict(dict["off_site_parameters"]))
+    return dict
+end
+
+function ACEbase.read_dict(::Val{:HModel}, dict::Dict)::Model
+
+    # Construct basis function loop-up dictionary
+    basis_functions = Dict(k=>read_dict(v) for (k, v) in dict["model_hashes"])
+
+    # Regenerate basis function
+    regen_basis(v) = Basis(
+        basis_functions[v["basis"]],
+        Tuple(v["id"]),
+        isnothing(v["coefficients"]) ? nothing : read_dict(v["coefficients"]),
+        isnothing(v["mean"]) ? nothing : read_dict(v["mean"]))
+
+    return Model(
+        Dict(parse_key(k)=>regen_basis(v) for (k, v) in dict["on_site_models"]),
+        Dict(parse_key(k)=>regen_basis(v) for (k, v) in dict["off_site_models"]),
+        read_dict(dict["on_site_parameters"]),
+        read_dict(dict["off_site_parameters"]))
+
+end
+
 
 
 # Todo: this is mostly to stop terminal spam but needs to be updated

@@ -1,11 +1,21 @@
+module Fitting2
 using HDF5, ACEbase, ACEhamiltonians, StaticArrays, Statistics, LinearAlgebra
 using HDF5: Group
-using ACE: ACEConfig, evaluate, scaling, valtype, State
+using ACE: ACEConfig, evaluate, scaling, State
 using ACEhamiltonians.Fitting: evaluateval_real, solve_ls
+
+export assemble_ls_new, fit!, predict, predict!
+
+# Todo:
+#   - Need to make sure that the acquire_B! function used by ACE does not actually modify the
+#     basis function. Otherwise there may be some issues with sharing basis functions.
+#   - ACE should be modified so that `valtype` inherits from Base. This way there should be
+#     no errors caused when importing it. 
 
 function evaluateval_real_new(Aval)
 
     n₁, n₂ = size(Aval[1])
+    ℓ₁, ℓ₂ = Int((n₁ - 1) / 2), Int((n₂ - 1) / 2)
 
     # allocate Aval_real
     Aval_real = [zeros(ComplexF64, n₁, n₂) for i = 1:length(Aval)]
@@ -44,6 +54,8 @@ function evaluateval_real_new(Aval)
 
             Aval_real[k][i,j] = scale * plane * (s * (val))
         end
+
+        # Prefactor "scale" could be applied here as a matrix operation
     end
     #return Aval_real
     if norm(Aval_real - real(Aval_real))<1e-12
@@ -108,7 +120,7 @@ end
 
 
 
-function assemble_ls(basis::Basis, data::DataSet, zero_mean::Bool=false)
+function assemble_ls_new(basis::Basis, data::DataSet, zero_mean::Bool=false)
     # This will be rewritten once the other code has been refactored.
 
     n₀, n₁, n₂ = size(data)
@@ -118,7 +130,7 @@ function assemble_ls(basis::Basis, data::DataSet, zero_mean::Bool=false)
     # at a later data if this layout is not found to be strictly necessary.
     cfg = ACEConfig.(data.states)
     Aval = evaluate.(Ref(basis.basis), cfg)
-    A = permutedims(reduce(hcat, evaluateval_real.(Aval)), (2, 1))
+    A = permutedims(reduce(hcat, evaluateval_real_new.(Aval)), (2, 1))
 
     Y = [data.values[i, :, :] for i in 1:n₀]
 
@@ -139,7 +151,7 @@ function fit!(basis::Basis, data::DataSet, zero_mean::Bool=false)
     Γ = Diagonal(scaling(basis.basis, 2))
 
     # Setup the least squares problem
-    Φ, Y, x̄ = assemble_ls(basis, data, zero_mean)
+    Φ, Y, x̄ = assemble_ls_new(basis, data, zero_mean)
     
     # Assign the mean value to the basis set
     basis.mean = x̄
@@ -205,35 +217,27 @@ function fit!(model::Model, systems::Vector{Group}, target::Symbol)
     end
 end
 
-function predict!(values::Matrix, basis::Basis, states::Vector{Vector{State}})
+function predict!(values::Array, basis::Basis, states::Vector{Vector{S}}) where S<:State
     for (n, state) in enumerate(ACEConfig.(states))
         A = evaluate(basis.basis, state)
-        B = evaluateval_real(A)
-        values[n] = (basis.coefficients' * B) + basis.mean
+        B = evaluateval_real_new(A)
+        values[n, :, :] = (basis.coefficients' * B) + basis.mean
     end
 end
 
-function predict(basis::Basis, states::Vector{Vector{State}})
+function predict(basis::Basis, states::Vector{Vector{S}}) where S<:State
     # Work out the sub-block shape. There must be a better way of doing this. I expect
     # there is a function that can extract the size of the internal sparse matrix. But
     # for now we cheat by pre-evaluating the first state and checking the resulting shape.
-    n₁, n₂ = size(evaluateval_real(evaluate(basis.basis, ACEConfig(states[1])))[1])
-    values = AbstractArray{valtype(basis.basis), 3}(undef, length(states), n₁, n₂)
+    # Realistically the type should match that produced by valtype, however the evaluateval_real
+    # ends up returning only the real component, thus these do no match up
+    n, m = ACE.valtype(basis.basis).parameters[[3, 4]]
+    type = valtype(evaluateval_real_new(evaluate(basis.basis, ACEConfig(states[1])))[1])
+    values = Array{type, 3}(undef, length(states), n, m)
     predict!(values, basis, states)
     return values
+end
 
 end
 
-path = "/home/ajmhpc/Documents/Work/Projects/ACEtb/Data/Si/Construction/batch_0.h5"
-db = h5open(path, "r")
-model = read_dict(load_json("model.json"))
-basis = model.on_site_models[(14, 4, 4)]
-# basis = read_dict(load_json("basis_on.json"))
-# fit!(model, [db["0224"]], :H)
-
-data_set = collect_data_from_hdf5(db["0224"], basis, :H)
-fit!(basis, data_set)
-# values = predict(basis, data_set.states)
-
-close(db)
 

@@ -28,6 +28,9 @@ include("dataproc.jl")
 include("fit.jl")
 @reexport using ACEhamiltonians.Fitting
 
+include("fitting.jl")
+@reexport using ACEhamiltonians.Fitting2
+
 include("predict.jl")
 @reexport using ACEhamiltonians.Predict
 

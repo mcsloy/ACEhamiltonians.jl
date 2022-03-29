@@ -349,6 +349,20 @@ function collect_data_from_hdf5(src::Group, basis::Basis, target::Symbol)
 end
 
 
+# """
+
+# Gather the requested sub-block from specific blocks of a source matrix.
+
+# """
+# function gather_sub_blocks(source::Matrix{F}, blocks::Matrix{I}, sub_block::Tuple{I, I}, basis_def, atoms) where {F, I<:Integer}
+    
+    
+#     # values = Array{valtype(source), 3}(size(blocks, 1), n, m)
+# end
+
+# function assign_sub_blocks(target, blocks, sub_block, basis_def, atoms, values)
+# end
+
 # locate_sub_blocks()
 # gather_sub_blocks()
 # assign_sub_blocks()

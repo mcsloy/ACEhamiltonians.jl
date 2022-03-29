@@ -3,7 +3,7 @@ import ACEbase.FIO: read_dict, write_dict
 import ACEbase
 using ACEhamiltonians
 
-export ParaDef, show, ison, read_dict, write_dict
+export ParaDef, show, ison, read_dict, write_dict, gather
 
 # Todo:
 #   - Refactor read/write_dict methods to make use of vector and matrix
@@ -332,6 +332,20 @@ function ACEbase.read_dict(::Val{:ParaDef}, dict::Dict)::ParaDef
         "λₗ"=>on_site ? nothing : format(dict["λₗ"]),
     ))
 end
+
+
+
+function gather(para::ParaDef, z, i, j)
+    # Todo: document this
+    return (f -> getfield(para, f)[z][i, j]).(
+        (:ν, :deg, :e_cutₒᵤₜ, :e_cutᵢₙ))
+end
+
+function gather(para::ParaDef, z_1, z_2, i, j)
+    # Todo: document this
+    return (f -> getfield(para, f)[(z_1, z_2)][i, j]).(
+        (:ν, :deg, :e_cutₒᵤₜ, :e_cutᵢₙ, :bond_cut, :λₙ, :λₗ))
+end    
 
 
 """
