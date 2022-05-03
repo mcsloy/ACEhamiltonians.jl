@@ -125,34 +125,6 @@ end
 # end
 
 
-function assemble_ls_new!(A, basis::Basis, data::DataSet, zero_mean::Bool=false)
-    # This will be rewritten once the other code has been refactored.
-
-    # Should `A` not be constructed using `acquire_B!`?
-
-    n₀, n₁, n₂ = size(data)
-    # Currently the code desires "A" to be an X×Y matrix of Nᵢ×Nⱼ matrices, where X is
-    # the number of sub-block samples, Y is equal to `size(bos.basis.A2Bmap)[1]`, and
-    # Nᵢ×Nⱼ is the sub-block shape; i.e. 3×3 for pp interactions. This may be refactored
-    # at a later data if this layout is not found to be strictly necessary.
-    cfg = ACEConfig.(data.states)
-    Aval = evaluate.(Ref(basis.basis), cfg)
-    A = permutedims(reduce(hcat, evaluateval_real_new.(Aval)), (2, 1))
-    
-    Y = [data.values[i, :, :] for i in 1:n₀]
-
-    # Calculate the mean value x̄
-    if !zero_mean && n₁ ≡ n₂ && ison(basis) 
-        x̄ = mean(diag(mean(Y)))*I(n₁)
-    else
-        x̄ = zeros(n₁, n₂)
-    end
-
-    Y .-= Ref(x̄)
-    return A, Y, x̄
-end
-
-
 
 function assemble_ls_new(basis::Basis, data::DataSet, zero_mean::Bool=false)
     # This will be rewritten once the other code has been refactored.
@@ -167,6 +139,7 @@ function assemble_ls_new(basis::Basis, data::DataSet, zero_mean::Bool=false)
     cfg = ACEConfig.(data.states)
     Aval = evaluate.(Ref(basis.basis), cfg)
     A = permutedims(reduce(hcat, evaluateval_real_new.(Aval)), (2, 1))
+    # A = permutedims(reduce(hcat, evaluateval_real.(Aval)), (2, 1))
     
     Y = [data.values[i, :, :] for i in 1:n₀]
 
@@ -182,9 +155,7 @@ function assemble_ls_new(basis::Basis, data::DataSet, zero_mean::Bool=false)
 end
 
 
-
-
-function fit!(basis::T, data::DataSet, zero_mean::Bool=false) where T<:Basis
+function fit!(basis::Basis, data::DataSet, zero_mean::Bool=false)
     # Lambda term should not be hardcoded to 1e-7!
 
     # Get the basis function's scaling factor (?)
@@ -199,19 +170,8 @@ function fit!(basis::T, data::DataSet, zero_mean::Bool=false) where T<:Basis
     # Solve the least squares problem and get the coefficients
     basis.coefficients = collect(solve_ls(Φ, Y, 1e-7, Γ, "LSQR"))
 
-    if T<:OffSiteBasis
-        Γ = Diagonal(scaling(basis.basis, 2))
-        Φ, Y, x̄ = assemble_ls_new(basis, data, zero_mean)
-        basis.mean_i = x̄
-        basis.coefficients = collect(solve_ls(Φ, Y, 1e-7, Γ, "LSQR"))
-
-    end
-
-
     nothing
 end
-
-
 
 
 """

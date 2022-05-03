@@ -1,4 +1,4 @@
-module Parameters
+# module Parameters
 import ACEbase.FIO: read_dict, write_dict
 import ACEbase
 using ACEhamiltonians
@@ -19,6 +19,25 @@ P = Union{R, Dict{K, A}} where {K<:Union{Tuple{I, I}, R}, A<:Any} where {R<:Real
 
 # Todo: Move this elsewhere
 BasisDef = Dict{I, Vector{I}} where I<:Integer
+
+
+struct OnSiteParaDefGlobal{Ti<:Integer,Tf<:AbstractFloat}
+    ν::Ti
+    deg::Ti
+    e_cut_out::Tf
+    e_cut_in::Tf
+end
+
+struct OffSiteParaDefGlobal{Ti<:Integer,Tf<:AbstractFloat}
+    ν::Ti
+    deg::Ti
+    e_cut_out::Tf
+    e_cut_in::Tf
+    b_cut::Tf
+end
+
+
+
 
 """
     ParaDef(ν, deg, e_cutₒᵤₜ, e_cutᵢₙ[, bond_cut, λₙ, λₗ])
@@ -491,4 +510,4 @@ function _parameter_expander(
     return new_parameters
 end
 
-end
+# end

@@ -5,8 +5,7 @@ using JuLIP: Atoms
 using ACEhamiltonians
 
 
-export load_overlap, load_hamiltonian, gamma_only, load_cell_translations, load_k_points_and_weights, load_basis_set_definition, load_atoms, load_old_hamiltonian, load_old_atoms
-
+export load_overlap, load_hamiltonian, gamma_only, load_cell_translations, load_k_points_and_weights, load_basis_set_definition, load_atoms, load_old_hamiltonian, load_old_atoms, load_hamiltonian_gamma, load_overlap_gamma
 
 # Flips and array from row to column major and vice-versa 
 rcf(array) = permutedims(array, reverse(1:ndims(array)))
@@ -28,10 +27,8 @@ Load structural information from HDF5 group into a `JuLIP.Atoms` instance.
 - Make use of unit information.
 """
 function load_atoms(src::Group)
-    
     geom = src["Structure"]
     z, x = read(geom["atomic_numbers"]), read(geom["positions"])
-
     if haskey(geom, "lattice")
         return Atoms(; Z=z, X=x, cell=rcf(read(geom["lattice"])), pbc=true)
     else
@@ -72,6 +69,10 @@ gamma_only(src::Group) = !haskey(src, "Info/Translations")
 
 load_hamiltonian(src::Group) = load_data(src, "H")
 load_overlap(src::Group) = load_data(src, "S")
+
+# Temporary functions
+load_hamiltonian_gamma(src::Group) = load_data(src, "H_gamma")
+load_overlap_gamma(src::Group) = load_data(src, "S_gamma")
 
 # Temporary working function to enable reading of deprecated databases
 function load_old_hamiltonian(path::String)

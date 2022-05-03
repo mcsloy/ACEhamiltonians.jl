@@ -6,11 +6,10 @@ using ACE: SymmetricBasis, SphericalMatrix, Utils.RnYlm_1pbasis, SimpleSparseBas
            CylindricalBondEnvelope, Categorical1pBasis, cutoff_radialbasis
 import ACEbase
 using ACEhamiltonians
-using ACEhamiltonians.Parameters: OnSiteParaSet, OffSiteParaSet
+# using ACEhamiltonians.Parameters
 
 
-
-export Basis, OnSiteBasis, OffSiteBasis, radial, angular, categorical, envelope, Model, on_site_ace_basis, off_site_ace_basis, filter_offsite_be
+export Basis, BasisDef, radial, angular, categorical, envelope, Model, on_site_ace_basis, off_site_ace_basis, filter_offsite_be
 """
 TODO:
     - Figure out what is going on with filter_offsite_be and its arguments.
@@ -20,57 +19,80 @@ TODO:
     - Improve typing for the Model structure.
     - Replace e_cutₒᵤₜ, e_cutᵢₙ, etc. with more "typeable" names.
 """
-
 ###################
 # Basis Structure #
 ###################
-# Todo:
-#   - Document
-#   - Give type information
-#   - Serialization routines
+
+"""
+
+    Basis(basis, id[, coefficients, mean])
+
+Structure responsible for holding and allowing for ease of manipulation of ACE bases.
 
 
-abstract type Basis{T} end
+# Attributes:
+- `basis::SymmetricBasis`: The ACE basis object.  
+- `id::Tuple': A tuple identifying the interaction to which the basis pertains. This should
+    take the forms (Zᵢ, sᵢ, sⱼ) & (Zᵢ, Zⱼ, sᵢ, sⱼ) for on and off-site bases respectively.
+    Where Zᵢ/Zⱼ are the atomic numbers and and sᵢ/sⱼ are the shell numbers. 
+- `coefficients::Vector{T<:AbstractReal}`: ACE basis coefficients as determined by the
+    least squares fit.
+- `mean::Matrix{T<:AbstractReal}`: Mean values (offset) as obtained during the least
+    squares fitting process.
 
-mutable struct OnSiteBasis{T} <: Basis{T}
-    basis
-    id
-    coefficients
-    mean
+# Constructors
+Unfitted `Basis` instances can be instantiated either by providing a `SymmetricBasis`
+object, which can be constructed with one of the convenience functions:
+[`on_site_ace_basis`](@ref): for on-site instances and [`off_site_ace_basis`](@ref): for
+off-site instances. However, these produce simple `SymmetricBasis` instances with mostly
+hard-coded parameters. If more fine-grained control over the basis' parameters is required
+then `SymmetricBasis` instances will need to be instantiated manually. Fully fitted
+`Basis` instances are constructed by specifying all requisite attributes.
 
-    function OnSiteBasis(basis, id)
+# Notes
+`Basis` instances can be fitted using one of the various `fit!` methods present in the
+`ACEhamiltonians.Fitting` module.
+
+It is worth remarking that while the underling ACE `SymmetricBasis` entity is a complex
+type, as defined by its value type `SphericalMatrix`, the actual results returned by
+the calculation at the end are real. Thus the type here is always real.
+
+
+Todo:
+    - Add a catch to the predictor to disallow predictions to be be made using
+      basis instances that have not yet be fitted.
+    - Check if `mean` is a scalar or vector and update read_dict as needed.
+
+
+"""
+mutable struct Basis{T<:AbstractFloat}
+    basis::S where S<:SymmetricBasis
+    id::T where T<:Tuple
+    coefficients::Union{Vector{T}, Nothing}
+    mean::Union{Matrix{T}, Nothing}
+
+    function Basis(basis, id)
+        # Even though SphericalMatrix may say it is complex the results will always be
+        # real, thus the type gets down-converted to its real equivalent.
         type = real(ACE.valtype(basis).parameters[5])
         new{type}(basis, id, nothing, nothing)
     end
 
-    function OnSiteBasis(basis, id, coefficients, mean)
+    function Basis(basis, id, coefficients, mean)
         type = real(ACE.valtype(basis).parameters[5])
         new{type}(basis, id, coefficients, mean)
     end
 
 end
 
-mutable struct OffSiteBasis{T} <: Basis{T}
-    basis
-    id
-    coefficients
-    coefficients_i
-    mean
-    mean_i
+# Associated helper methods
 
-    function OffSiteBasis(basis, id)
-        type = real(ACE.valtype(basis).parameters[5])
-        new{type}(basis, id, nothing, nothing, nothing, nothing)
-    end
+Base.:(==)(x::Basis, y::Basis) = (
+    x.id == y.id && x.coefficients == y.coefficients
+    && x.mean == y.mean && x.basis == y.basis)
 
-    function OffSiteBasis(basis, id, coefficients, coefficients_i, mean, mean_i)
-        type = real(ACE.valtype(basis).parameters[5])
-        new{type}(basis, id, coefficients, coefficients_i, mean, mean_i)
-    end
-end
-
-function Base.show(io::IO, basis::T) where T<:Basis
-    print(io, "$(nameof(T))(id: $(basis.id), fitted: $(~isnothing(basis.mean)))")
+function Base.show(io::IO, basis::Basis)
+    print(io, "Basis(id: $(basis.id), fitted: $(~isnothing(basis.mean)))")
 end
 
 """Expected shape of the sub-block associated with the `Basis`; 3×3 for a pp basis etc."""
@@ -83,12 +105,30 @@ Base.valtype(::Basis{T}) where T = T
 azimuthals(basis::Basis) = (ACE.valtype(basis.basis).parameters[1:2]...,)
 
 
+function ACEbase.write_dict(b::Basis)
+    # Handle parsing of entities which may be arrays or `nothing`
+    p(i) = isnothing(i) ? i : write_dict(i)
+    return Dict(
+    "__id__"=>"HBasis",
+    "basis"=>write_dict(b.basis),
+    "id"=>b.id,
+    "coefficients"=>p(b.coefficients),
+    "mean"=>p(b.mean))
+end
+
+function ACEbase.read_dict(::Val{:HBasis}, dict::Dict)::Basis
+    # Handle parsing of entities which may be arrays or `nothing`
+    p(i) = isnothing(i) ? i : read_dict(i)
+    return Basis(
+        read_dict(dict["basis"]),
+        Tuple(dict["id"]),
+        p(dict["coefficients"]),
+        p(dict["mean"]))
+end
+
+
 """Returns a boolean indicating if the basis instance represents an on-site interaction."""
-
-Parameters.ison(::OnSiteBasis) = true
-Parameters.ison(::OffSiteBasis) = false
-
-
+Parameters.ison(basis::Basis) = length(basis.id) == 3
 
 """
 _filter_bases(basis, type)
@@ -126,20 +166,28 @@ envelope(basis::Basis) = _filter_bases(basis, ACE.BondEnvelope)
 # Model Structure #
 ###################
 struct Model
+    # on_site_models::Dict{NTuple{4, I}, Basis} where I<:Integer  # z₁-z₂-ℓ₁-ℓ₂
+    # off_site_models::Dict{NTuple{3, I}, Basis}  where I<:Integer # z-ℓ₁-ℓ₂
+    # on_site_parameters::Parameters
+    # off_site_parameters::Parameters
+
+    # on_site_models
+    # off_site_models
+
     on_site_bases
     off_site_bases
 
-    on_site_parameters::OnSiteParaSet
-    off_site_parameters::OffSiteParaSet
+    on_site_parameters
+    off_site_parameters
     basis_definition
 
     function Model(on_site_bases, off_site_bases,
-        on_site_parameters::OnSiteParaSet, off_site_parameters::OffSiteParaSet, basis_definition)
+        on_site_parameters::ParaDef, off_site_parameters::ParaDef, basis_definition)
         new(on_site_bases, off_site_bases, on_site_parameters, off_site_parameters, basis_definition)
     end
     
-    function Model(basis_definition::BasisDef, on_site_parameters::OnSiteParaSet,
-                   off_site_parameters::OffSiteParaSet)
+    function Model(basis_definition::BasisDef, on_site_parameters::ParaDef,
+                   off_site_parameters::ParaDef)
         # Developers Notes
         # This makes the assumption that all z₁-z₂-ℓ₁-ℓ₂ interactions are represented
         # by the same model.
@@ -156,7 +204,7 @@ struct Model
         # Sorting the basis definition makes avoiding interaction doubling easier.
         # That is to say, we don't create models for both H-C and C-H interactions
         # as they represent the same thing.
-        basis_definition_sorted = sort(collect(basis_definition), by=first)
+        basis_definition_sorted = sort(collect(basis_definition), by=first) 
         
         # Loop over all unique species pairs then over all combinations of their shells. 
         for (zₙ, (zᵢ, shellsᵢ)) in enumerate(basis_definition_sorted)
@@ -165,25 +213,33 @@ struct Model
                     # Skip symmetrically equivalent interactions. 
                     zᵢ == zⱼ && n₁ > n₂ && continue
                     
-                    if zᵢ == zⱼ
-                        id = (zᵢ, n₁, n₂)
+                    if zᵢ == zⱼ 
                         ace_basis = ace_basis_on( # On-site bases
-                            ℓ₁, ℓ₂, gather(on_site_parameters, id)...)
-                        # on_sites[(zᵢ, n₁, n₂)] = Basis(ace_basis, (zᵢ, n₁, n₂))
-                        on_sites[(zᵢ, n₁, n₂)] = OnSiteBasis(ace_basis, id)
+                            ℓ₁, ℓ₂, gather(on_site_parameters, zᵢ, n₁, n₂)...)
+                        on_sites[(zᵢ, n₁, n₂)] = Basis(ace_basis, (zᵢ, n₁, n₂))
                     end
 
-                    id = (zᵢ, zⱼ, n₁, n₂)
                     ace_basis = ace_basis_off( # Off-site bases
-                        ℓ₁, ℓ₂, gather(off_site_parameters, id)...)
-                    # off_sites[(zᵢ, zⱼ, n₁, n₂)] = Basis(ace_basis, (zᵢ, zⱼ, n₁, n₂))
-                    off_sites[(zᵢ, zⱼ, n₁, n₂)] = OffSiteBasis(ace_basis, id)
+                        ℓ₁, ℓ₂, gather(off_site_parameters, zᵢ, zⱼ, n₁, n₂)...)
+
+                    off_sites[(zᵢ, zⱼ, n₁, n₂)] = Basis(ace_basis, (zᵢ, zⱼ, n₁, n₂))
                 end
             end
         end
 
     new(on_sites, off_sites, on_site_parameters, off_site_parameters, basis_definition)
     end
+
+    # function Model(basis_definition::BasisDef)
+    #     # Double check if this is really needed, document if so remove if not.
+    #     parameters = ParaDef(basis_definition)
+    #     return Model(basis_definition, parameters)
+    # end
+
+    # function Model(source::HDF5.Group)
+    #     # Load model from HDF5 group
+    #     error("Not implemented")
+    # end
 
 end
 
@@ -262,6 +318,7 @@ function Base.show(io::IO, model::Model)
     print(io, "Model(fitted=(on: $on, off: $off), species: ($species))")
 end
 
+
 ##########################
 # ACE Basis Constructors #
 ##########################
@@ -331,11 +388,11 @@ must be manually instantiated if more fine-grained control is desired.
 - `basis::SymmetricBasis`: ACE basis entity for modelling the specified interaction. 
 
 """
-function off_site_ace_basis(ℓ₁::I, ℓ₂::I, ν::I, deg::I, b_cut::F, e_cutₒᵤₜ::F=5., e_cutᵢₙ::F=0.5,
+function off_site_ace_basis(ℓ₁::I, ℓ₂::I, ν::I, deg::I, b_cut::F, e_cutₒᵤₜ::F=5., e_cutᵢₙ::F=2.5,
     λₙ::F=.5, λₗ::F=.5) where {I<:Integer, F<:AbstractFloat}
 
     # Bond envelope which controls which atoms are seen by the bond.
-    env = CylindricalBondEnvelope(b_cut, e_cutₒᵤₜ, e_cutₒᵤₜ, floppy=false)
+    env = CylindricalBondEnvelope(b_cut, e_cutₒᵤₜ, e_cutₒᵤₜ)
 
     # Categorical1pBasis is applied to the basis to allow atoms which are part of the
     # bond to be treated differently to those that are just part of the environment.

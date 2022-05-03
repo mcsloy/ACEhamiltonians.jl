@@ -22,7 +22,6 @@ mutable struct Basis
 end
 
 
-
 function on_site_basis(ℓ₁::Integer, ℓ₂::Integer, ν::Integer, deg::Integer,
                        r_cut::AbstractFloat, r_0::AbstractFloat=2.5)::Basis
     # Build i) a matrix indicating the desired sub-block shape, ii) the one

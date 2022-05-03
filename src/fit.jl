@@ -53,7 +53,8 @@ function evaluateval_real(Aval)
       end
    end
    #return Aval_real
-   if norm(Aval_real - real(Aval_real))<1e-12
+   # if norm(Aval_real - real(Aval_real))<1e-12
+   if norm(Aval_real - real(Aval_real))<1e-10
       return real(Aval_real)
    else
       error("norm = $(norm(Aval_real - real(Aval_real))), please recheck...")

@@ -8,7 +8,10 @@ include("common.jl")
 include("io.jl")
 @reexport using ACEhamiltonians.DataIO
 
-include("paradef.jl")
+# include("paradef.jl")
+# @reexport using ACEhamiltonians.Parameters
+
+include("paradef_new.jl")
 @reexport using ACEhamiltonians.Parameters
 
 include("basis.jl")
@@ -36,6 +39,9 @@ include("predict.jl")
 
 include("dictionary.jl")
 @reexport using ACEhamiltonians.Dictionary
+
+include("interface.jl")
+@reexport using ACEhamiltonians.Interface
 
 include("tools.jl")
 
