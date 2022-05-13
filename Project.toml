@@ -1,5 +1,6 @@
 name = "ACEhamiltonians"
 uuid = "0c0b7517-201b-4082-a776-cd952d974092"
+authors = ["ACEsuit"]
 version = "0.0.1"
 
 [deps]
@@ -8,7 +9,6 @@ ACEatoms = "1e34e032-0b37-4839-a012-196b35408c3c"
 ACEbase = "14bae519-eb20-449c-a949-9c58ed33163e"
 ArgParse = "c7e460c6-2fb9-53a9-8c5b-16f535851c63"
 ArrayInterface = "4fba245c-0d91-5ea0-9b3e-6abc04ee57a9"
-Artifacts = "56f22d72-fd6d-98f1-02f0-08ddc0907c33"
 BlockArrays = "8e7c35d0-a365-5155-bbbb-fb81a777f24e"
 Distributed = "8ba89e20-285c-5b6f-9357-94700520ee1b"
 DistributedArrays = "aaf54ef3-cdf8-58ed-94cc-d582ad619b94"
