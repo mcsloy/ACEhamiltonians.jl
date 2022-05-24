@@ -9,11 +9,17 @@ using JuLIP.Utils: project_min
 using ACEhamiltonians
 using ACEhamiltonians.Common: BasisDef
 
+
 export collect_data, collect_data_from_hdf5, DataSet, locate_blocks, upper_blocks, off_site_blocks
 
 # Bond envelopes should be forced to have their λ fields renamed an set to zero, then
 # the state positions could be made relative to zero.
  
+
+# Todo:
+#   - `be` should be replaced by a boolean so that state size is consistent. This will
+#     speed up state construction.
+#   - An ACEConfig like entity should be created for batches of states.
 
 # These structures are used rather than the standard tuple based ACE state as they
 # are much faster (take 80% less time)
@@ -53,12 +59,27 @@ Base.zero(::B) where B<:BondState = zero(B)
 Base.zero(::B) where B<:AtomState = zero(B)
 
 
-"""Reverse a `BondState` so that the state is from the perspective of the second atom."""
+# `Base.reverse` should be removed in favour of `Base.inv`
+
+"""
+
+Reverse a `BondState` so that the state is from the perspective of the second atom.
+It is important to note that this assumes that the bond origin lies between the two
+bonding atoms. 
+"""
 function Base.reverse(state::BondState{T}) where T
     if state.be == :bond
         return BondState{T}(-state.rr, -state.rr0, state.be)
     else
-        return BondState{T}(state.rr - state.rr0, -state.rr0, state.be)
+        return BondState{T}(state.rr, -state.rr0, state.be)
+    end
+end
+
+function Base.inv(state::BondState{T}) where T
+    if state.be == :bond
+        return BondState{T}(-state.rr, -state.rr0, state.be)
+    else
+        return BondState{T}(state.rr, -state.rr0, state.be)
     end
 end
 
@@ -197,7 +218,8 @@ function get_states(i::I, j::I, atoms::Atoms, envelope::BondEnvelope,
     rr = nothing
     if envelope.λ == 0.0
         offset = rr0 / 2
-        rr = -offset  # Check that this is actually valid
+        # rr = -offset  # Check that this is actually valid
+        rr = rr0
     else
         offset = typeof(rr0)(zeros(3))
         rr = rr0
@@ -450,6 +472,11 @@ Base.lastindex(data_set::DataSet) = length(data_set)
 Base.length(data_set::DataSet) = size(data_set)[1]
 Base.size(data_set::DataSet) = size(data_set.values)
 
+Base.adjoint(data_set::DataSet) = DataSet(
+        conj(permutedims(data_set.values, (1, 3, 2))),
+        reverse(data_set.block_indices, dims=2),
+        data_set.cell_indices,  # ← need to double check this
+        [reverse.(i) for i in data_set.states])
 
 function Base.show(io::IO, data_set::DataSet)
     F = eltype(data_set.values)
@@ -458,6 +485,8 @@ function Base.show(io::IO, data_set::DataSet)
     print(io, "DataSet{$F, $I}($mat_shape)")
 end
 
+Parameters.ison(::DataSet{F, I, S}) where {F, I, S<:BondState} = false
+Parameters.ison(::DataSet{F, I, S}) where {F, I, S<:AtomState} = true
 
 function collect_data(matrix::AbstractArray, basis::Basis, atoms::Atoms,
     basis_def::Dict, images::Union{Matrix, Nothing}=nothing)

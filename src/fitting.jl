@@ -2,7 +2,7 @@ module Fitting2
 using HDF5, ACE, ACEbase, ACEhamiltonians, StaticArrays, Statistics, LinearAlgebra
 using HDF5: Group
 using JuLIP: Atoms
-using ACE: ACEConfig, evaluate, scaling, AbstractState
+using ACE: ACEConfig, evaluate, scaling, AbstractState, SymmetricBasis
 using ACEhamiltonians.Fitting: evaluateval_real, solve_ls
 using ACEhamiltonians.Common: number_of_orbitals
 using ACEhamiltonians.DataManipulation: get_states, locate_blocks, upper_blocks, off_site_blocks, gather_matrix_blocks
@@ -12,14 +12,22 @@ using ACEhamiltonians.DataIO: load_hamiltonian_gamma, load_hamiltonian_gamma
 export assemble_ls_new, fit!, predict, predict!
 
 
+# Once the bond inversion issue has been resolved the the redundant models will no longer
+# be required. The changes needed to be made in this file to remove the redundant model
+# are as follows:
+#   - Remove inverted state condition in single model `fit!` method.
+#   - `_assemble_ls` should take `Basis` entities.
+#   - Remove inverted state condition from the various `predict` methods.
+
+
 # Todo:
 #   - Need to make sure that the acquire_B! function used by ACE does not actually modify the
 #     basis function. Otherwise there may be some issues with sharing basis functions.
 #   - ACE should be modified so that `valtype` inherits from Base. This way there should be
 #     no errors caused when importing it.
-#   - Remove hard coded matrix type from the predict function. 
+#   - Remove hard coded matrix type from the predict function.
 
-function evaluateval_real_new(Aval)
+function _evaluateval_real(Aval)
 
     n₁, n₂ = size(Aval[1])
     ℓ₁, ℓ₂ = Int((n₁ - 1) / 2), Int((n₂ - 1) / 2)
@@ -72,60 +80,8 @@ function evaluateval_real_new(Aval)
     end
 end
 
-# +1 * A[k,j] always
 
-# -1 * s₁*A[α,j] m₁<0
-#  0 * s₁*A[α,j] m₁=0
-# +1 * s₁*A[α,j] m₁>0
-
-# -1 * s₂*A[i,β] m₂<0
-#  0 * s₂*A[i,β] m₂=0
-# +1 * s₂*A[i,β] m₂>0
-
-# -1 * s₃*A[α,β] m₁ > 0 > m₂ or m₁ < 0 < m₂
-#  0 * s₃*A[α,β] m₁=0 or m₂=0
-# +1 * s₃*A[α,β] m₁ > 0 < m₂) or (m₁ < 0 > m₂
-
-# m₁<0:
-#   - m₂<0 : 1/2  (A)
-#   - m₂=0 : i/√2 (B)
-#   - m₂>0 : i/2  (C)
-
-# m₁=0:
-#   - m₂<0 : i/√2 (D)
-#   - m₂=0 : 1    (E)
-#   - m₂>0 : 1/√2 (F)
-
-# m₁>0:
-#   - m₂<0 : i/2  (G)
-#   - m₂=0 : 1/√2 (H)
-#   - m₂>0 : 1/2  (I)
-
-# if kc₁ && jc₁ # A (1/2)
-#     val += - s₁*A[α,j] - s₂*A[k,β] + s₃*A[α,β]
-# elseif kc₁ && jc₂ # B (im/sqrt(2))
-#     val += - s₁*A[α,j]
-# elseif kc₁ && jc₃ # C (im/2)
-#     val += - s₁*A[α,j] + s₂*A[k,β] - s₃*A[α,β]
-
-# elseif kc₂ && jc₁ # D (im/sqrt(2))
-#     val += - s₂*A[k,β]
-# # elseif kc₂ && jc₂ # E (1)
-# #     val = A[k,j]
-# elseif kc₂ && jc₃ # F (1/sqrt(2))
-#     val += + s₂*A[k,β]
-
-# elseif kc₃ && jc₁ # G (im/2)
-#     val += + s₁*A[α,j] - s₂*A[k,β] - s₃*A[α,β]
-# elseif kc₃ && jc₂ # H (1/sqrt(2))
-#     val += + s₁*A[α,j]
-# elseif kc₃ && jc₃ # I (1/2)
-#     val += + s₁*A[α,j] + s₂*A[k,β] + s₃*A[α,β]
-    
-# end
-
-
-function assemble_ls_new!(A, basis::Basis, data::DataSet, zero_mean::Bool=false)
+function _assemble_ls(basis::SymmetricBasis, data::DataSet, zero_mean::Bool=false)
     # This will be rewritten once the other code has been refactored.
 
     # Should `A` not be constructed using `acquire_B!`?
@@ -136,13 +92,13 @@ function assemble_ls_new!(A, basis::Basis, data::DataSet, zero_mean::Bool=false)
     # Nᵢ×Nⱼ is the sub-block shape; i.e. 3×3 for pp interactions. This may be refactored
     # at a later data if this layout is not found to be strictly necessary.
     cfg = ACEConfig.(data.states)
-    Aval = evaluate.(Ref(basis.basis), cfg)
-    A = permutedims(reduce(hcat, evaluateval_real_new.(Aval)), (2, 1))
+    Aval = evaluate.(Ref(basis), cfg)
+    A = permutedims(reduce(hcat, _evaluateval_real.(Aval)), (2, 1))
     
     Y = [data.values[i, :, :] for i in 1:n₀]
 
     # Calculate the mean value x̄
-    if !zero_mean && n₁ ≡ n₂ && ison(basis) 
+    if !zero_mean && n₁ ≡ n₂ && ison(data) 
         x̄ = mean(diag(mean(Y)))*I(n₁)
     else
         x̄ = zeros(n₁, n₂)
@@ -153,37 +109,22 @@ function assemble_ls_new!(A, basis::Basis, data::DataSet, zero_mean::Bool=false)
 end
 
 
-
-function assemble_ls_new(basis::Basis, data::DataSet, zero_mean::Bool=false)
-    # This will be rewritten once the other code has been refactored.
-
-    # Should `A` not be constructed using `acquire_B!`?
-
-    n₀, n₁, n₂ = size(data)
-    # Currently the code desires "A" to be an X×Y matrix of Nᵢ×Nⱼ matrices, where X is
-    # the number of sub-block samples, Y is equal to `size(bos.basis.A2Bmap)[1]`, and
-    # Nᵢ×Nⱼ is the sub-block shape; i.e. 3×3 for pp interactions. This may be refactored
-    # at a later data if this layout is not found to be strictly necessary.
-    cfg = ACEConfig.(data.states)
-    Aval = evaluate.(Ref(basis.basis), cfg)
-    A = permutedims(reduce(hcat, evaluateval_real_new.(Aval)), (2, 1))
-    
-    Y = [data.values[i, :, :] for i in 1:n₀]
-
-    # Calculate the mean value x̄
-    if !zero_mean && n₁ ≡ n₂ && ison(basis) 
-        x̄ = mean(diag(mean(Y)))*I(n₁)
-    else
-        x̄ = zeros(n₁, n₂)
-    end
-
-    Y .-= Ref(x̄)
-    return A, Y, x̄
-end
+###################
+# Fitting Methods #
+###################
+# Todo:
+#   - Add documentation.
+#   - Check that the relevant data exists before trying to extract it; i.e. don't bother
+#     trying to gather carbon on-site data from an H2 system.
+#   - Currently the basis set definition is loaded from the first system under the
+#     assumption that it is constant across all systems. However, this will break down
+#     if different species are present in each system.
+#   - The approach currently taken limits io overhead by reducing redundant operations.
+#     However, this will likely use considerably more memory.
 
 
 
-
+# Basis fitting
 function fit!(basis::T, data::DataSet, zero_mean::Bool=false) where T<:Basis
     # Lambda term should not be hardcoded to 1e-7!
 
@@ -191,7 +132,7 @@ function fit!(basis::T, data::DataSet, zero_mean::Bool=false) where T<:Basis
     Γ = Diagonal(scaling(basis.basis, 2))
 
     # Setup the least squares problem
-    Φ, Y, x̄ = assemble_ls_new(basis, data, zero_mean)
+    Φ, Y, x̄ = _assemble_ls(basis.basis, data, zero_mean)
     
     # Assign the mean value to the basis set
     basis.mean = x̄
@@ -199,33 +140,17 @@ function fit!(basis::T, data::DataSet, zero_mean::Bool=false) where T<:Basis
     # Solve the least squares problem and get the coefficients
     basis.coefficients = collect(solve_ls(Φ, Y, 1e-7, Γ, "LSQR"))
 
-    if T<:OffSiteBasis
-        Γ = Diagonal(scaling(basis.basis, 2))
-        Φ, Y, x̄ = assemble_ls_new(basis, data, zero_mean)
+    if T<:DoubleBasis
+        Γ = Diagonal(scaling(basis.basis_i, 2))
+        Φ, Y, x̄ = _assemble_ls(basis.basis_i, data', zero_mean)
         basis.mean_i = x̄
-        basis.coefficients = collect(solve_ls(Φ, Y, 1e-7, Γ, "LSQR"))
-
+        basis.coefficients_i = collect(solve_ls(Φ, Y, 1e-7, Γ, "LSQR"))
     end
-
 
     nothing
 end
 
-
-
-
-"""
-Todo:
-    - It will be important to check that the relevant data exists before trying to
-      extract it; i.e. don't bother trying to gather carbon on-site data from a H2
-      system etc.
-    - Currently the basis set definition is loaded for the first system under the
-      assumption that it constant across all systems. However, this will break down
-      if different species are present in each system, i.e. if the first system is
-      H2 but the second is CH4 then the carbon basis set will be absent.
-    - The approach taken here limits io overhead by reducing redundant load operations.
-      However, this will likely use considerably more memory.
-"""
+# Model fitting
 function fit!(model::Model, systems::Vector{Group}, target::Symbol)
     # Section 1: Gather the data
 
@@ -235,8 +160,8 @@ function fit!(model::Model, systems::Vector{Group}, target::Symbol)
 
     add_data!(dict, key, data) = dict[key] = data + getkey(dict, key, nothing) 
 
-    # get_matrix = target ≡ :H ? load_hamiltonian : load_overlap # Todo: Uncomment
-    get_matrix = load_hamiltonian_gamma
+    get_matrix = target ≡ :H ? load_hamiltonian : load_overlap # Todo: Uncomment
+    # get_matrix = load_hamiltonian_gamma
     
     # Loop over the specified systems
     for system in systems
@@ -318,31 +243,73 @@ end
 # Forms for pre-supplied arrays and for internal construction.
 
 
-# Fill a single supplied array with the results from multiple states
-function predict!(values::Array{F, 3}, basis::Basis, states::Vector{Vector{S}}) where {F<:AbstractFloat, S<:AbstractState}
-    for (n, state) in enumerate(ACEConfig.(states))
-        A = evaluate(basis.basis, state)
-        B = evaluateval_real_new(A)
-        # B = evaluateval_real(A)        
-        values[n, :, :] = (basis.coefficients' * B) + basis.mean
+######################
+# Prediction Methods #
+######################
+# Todo:
+#   - Array vs AbstractArray
+
+# Fill a matrix with the results of a single state
+# function predict!(values::Matrix{F}, basis::Basis, states::Vector{S}) where {F<:AbstractFloat, S<:AbstractState}
+#     A = evaluate(basis.basis, ACEConfig(states))
+#     B = _evaluateval_real(A)
+#     values .= (basis.coefficients' * B) + basis.mean
+# end
+
+# Fill a matrix with the results of a single state
+function predict!(values::AbstractArray{F, 2}, basis::T, state::Vector{S}) where {F<:AbstractFloat, T<:Basis, S<:AbstractState}
+    A = evaluate(basis.basis, ACEConfig(state))
+    B = _evaluateval_real(A)
+    values .= (basis.coefficients' * B) + basis.mean
+    if T<:DoubleBasis
+        A = evaluate(basis.basis_i, ACEConfig(inv.(state)))
+        B = _evaluateval_real(A)
+        values .= (values + ((basis.coefficients_i' * B) + basis.mean_i)') / 2.0
     end
 end
 
-# Fill a matrix with the results of a single state
-function predict!(values::Matrix{F}, basis::Basis, states::Vector{S}) where {F<:AbstractFloat, S<:AbstractState}
-    A = evaluate(basis.basis, ACEConfig(states))
-    B = evaluateval_real_new(A)
-    # B = evaluateval_real(A)  
-    values .= (basis.coefficients' * B) + basis.mean
+
+# Fill a tensor with the results of multiple states
+function predict!(values::Array{F, 3}, basis::T, states::Vector{Vector{S}}) where {F<:AbstractFloat, T<:Basis, S<:AbstractState}
+    for (n, state) in enumerate(ACEConfig.(states))
+        A = evaluate(basis.basis, state)
+        B = _evaluateval_real(A)
+        values[n, :, :] = (basis.coefficients' * B) + basis.mean
+        if T<:DoubleBasis
+            A = evaluate(basis.basis_i, ACEConfig(inv.(state)))
+            B = _evaluateval_real(A)
+            values[n, :, :] .= (values[n, :, :] + ((basis.coefficients_i' * B) + basis.mean_i)') / 2.0
+        end
+    end
 end
 
-# Fill a matrix with the results of a single state
-function predict!(values::AbstractArray{F, 2}, basis::Basis, state::Vector{S}) where {F<:AbstractFloat, S<:AbstractState}
-    A = evaluate(basis.basis, ACEConfig(state))
-    B = evaluateval_real_new(A)
-    # B = evaluateval_real(A)
-    values .= (basis.coefficients' * B) + basis.mean
+
+# Fill multiple arrays with the results from multiple states
+# This is used when filling sub-arrays; this is an important function and should be
+# completely rewritten at a latter date.
+function predict!(values::Vector{Any}, basis::T, states::Vector{Vector{S}}) where {T<:Basis, S<:AbstractState}
+    for (n, state) in enumerate(ACEConfig.(states))
+        A = evaluate(basis.basis, state)
+        B = _evaluateval_real(A)
+        values[n][:, :] .= (basis.coefficients' * B) + basis.mean
+        if T<:DoubleBasis
+            A = evaluate(basis.basis_i, ACEConfig(inv.(state)))
+            B = _evaluateval_real(A)
+            values[n][:, :] .= (values[n][:, :] + ((basis.coefficients_i' * B) + basis.mean_i)') / 2.0
+        end
+    end
 end
+
+
+# Fill a vector of matrices with the results from multiple states.
+# This is only included for compatibility and should eventual be removed.
+# function predict!(values::Vector{Matrix{F}}, basis::Basis, states::Vector{Vector{S}}) where {F<:AbstractFloat, S<:AbstractState}
+#     for (n, state) in enumerate(ACEConfig.(states))
+#         A = evaluate(basis.basis, state)
+#         B = _evaluateval_real(A)
+#         values[n][:, :] .= (basis.coefficients' * B) + basis.mean
+#     end
+# end
 
 
 # Construct and fill a matrix with the results of a single state
@@ -352,31 +319,6 @@ function predict(basis::Basis, states::Vector{S}) where S<:AbstractState
     predict!(values, basis, states)
     return values
 end
-
-# Fill a vector of matrices with the results from multiple states.
-# This is mostly included only for compatibility i think and should be removed.
-function predict!(values::Vector{Matrix{F}}, basis::Basis, states::Vector{Vector{S}}) where {F<:AbstractFloat, S<:AbstractState}
-    for (n, state) in enumerate(ACEConfig.(states))
-        A = evaluate(basis.basis, state)
-        B = evaluateval_real_new(A)
-        # B = evaluateval_real(A)
-        values[n][:, :] .= (basis.coefficients' * B) + basis.mean
-    end
-end
-
-# Fill multiple arrays with the results from multiple states
-# This is used when filling sub-arrays; this is an important function and should be
-# completely rewritten at a latter date.
-function predict!(values::Vector{Any}, basis::Basis, states::Vector{Vector{S}}) where {S<:AbstractState}
-    for (n, state) in enumerate(ACEConfig.(states))
-        A = evaluate(basis.basis, state)
-        B = evaluateval_real_new(A)
-        # B = evaluateval_real(A)
-        values[n][:, :] .= (basis.coefficients' * B) + basis.mean
-    end
-end
-
-
 
 
 # Construct and fill a matrix with the results from multiple states

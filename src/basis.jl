@@ -1,16 +1,19 @@
 module Bases
 # using HDF5
 using HDF5: Group
-using ACE
+using ACE, SparseArrays
 using ACE: SymmetricBasis, SphericalMatrix, Utils.RnYlm_1pbasis, SimpleSparseBasis,
            CylindricalBondEnvelope, Categorical1pBasis, cutoff_radialbasis
 import ACEbase
+using ACEbase.ObjectPools: VectorPool
 using ACEhamiltonians
 using ACEhamiltonians.Parameters: OnSiteParaSet, OffSiteParaSet
 
 
 
-export Basis, OnSiteBasis, OffSiteBasis, radial, angular, categorical, envelope, Model, on_site_ace_basis, off_site_ace_basis, filter_offsite_be
+
+
+export Basis, SingleBasis, DoubleBasis, radial, angular, categorical, envelope, Model, on_site_ace_basis, off_site_ace_basis, filter_offsite_be
 """
 TODO:
     - Figure out what is going on with filter_offsite_be and its arguments.
@@ -20,7 +23,6 @@ TODO:
     - Improve typing for the Model structure.
     - Replace e_cutₒᵤₜ, e_cutᵢₙ, etc. with more "typeable" names.
 """
-
 ###################
 # Basis Structure #
 ###################
@@ -28,46 +30,92 @@ TODO:
 #   - Document
 #   - Give type information
 #   - Serialization routines
+#   - `DoubleBasis` instances should raise an error if it is used inappropriately.
 
 
 abstract type Basis{T} end
 
-mutable struct OnSiteBasis{T} <: Basis{T}
+mutable struct SingleBasis{T} <: Basis{T}
     basis
     id
     coefficients
     mean
 
-    function OnSiteBasis(basis, id)
+    function SingleBasis(basis, id)
         type = real(ACE.valtype(basis).parameters[5])
         new{type}(basis, id, nothing, nothing)
     end
 
-    function OnSiteBasis(basis, id, coefficients, mean)
+    function SingleBasis(basis, id, coefficients, mean)
         type = real(ACE.valtype(basis).parameters[5])
         new{type}(basis, id, coefficients, mean)
     end
 
 end
 
-mutable struct OffSiteBasis{T} <: Basis{T}
+mutable struct DoubleBasis{T} <: Basis{T}
     basis
+    basis_i
     id
     coefficients
     coefficients_i
     mean
     mean_i
 
-    function OffSiteBasis(basis, id)
+    function DoubleBasis(basis, basis_i, id)
         type = real(ACE.valtype(basis).parameters[5])
-        new{type}(basis, id, nothing, nothing, nothing, nothing)
+        new{type}(basis, basis_i,  id, nothing, nothing, nothing, nothing)
     end
 
-    function OffSiteBasis(basis, id, coefficients, coefficients_i, mean, mean_i)
+    function DoubleBasis(basis, basis_i, id, coefficients, coefficients_i, mean, mean_i)
         type = real(ACE.valtype(basis).parameters[5])
-        new{type}(basis, id, coefficients, coefficients_i, mean, mean_i)
+        new{type}(basis, basis_i,  id, coefficients, coefficients_i, mean, mean_i)
     end
 end
+
+
+Basis(basis, id) = SingleBasis(basis, id)
+Basis(basis, basis_i, id) = DoubleBasis(basis, basis_i, id)
+
+
+# mutable struct OnSiteBasis{T} <: Basis{T}
+#     basis
+#     id
+#     coefficients
+#     mean
+
+#     function OnSiteBasis(basis, id)
+#         type = real(ACE.valtype(basis).parameters[5])
+#         new{type}(basis, id, nothing, nothing)
+#     end
+
+#     function OnSiteBasis(basis, id, coefficients, mean)
+#         type = real(ACE.valtype(basis).parameters[5])
+#         new{type}(basis, id, coefficients, mean)
+#     end
+
+# end
+
+
+# mutable struct OffSiteBasis{T} <: Basis{T}
+#     basis
+#     basis_i
+#     id
+#     coefficients
+#     coefficients_i
+#     mean
+#     mean_i
+
+#     function OffSiteBasis(basis, basis_i, id)
+#         type = real(ACE.valtype(basis).parameters[5])
+#         new{type}(basis, basis_i,  id, nothing, nothing, nothing, nothing)
+#     end
+
+#     function OffSiteBasis(basis, basis_i, id, coefficients, coefficients_i, mean, mean_i)
+#         type = real(ACE.valtype(basis).parameters[5])
+#         new{type}(basis, basis_i,  id, coefficients, coefficients_i, mean, mean_i)
+#     end
+# end
 
 function Base.show(io::IO, basis::T) where T<:Basis
     print(io, "$(nameof(T))(id: $(basis.id), fitted: $(~isnothing(basis.mean)))")
@@ -84,9 +132,7 @@ azimuthals(basis::Basis) = (ACE.valtype(basis.basis).parameters[1:2]...,)
 
 
 """Returns a boolean indicating if the basis instance represents an on-site interaction."""
-
-Parameters.ison(::OnSiteBasis) = true
-Parameters.ison(::OffSiteBasis) = false
+Parameters.ison(x::Basis) = length(x.id) ≡ 3
 
 
 
@@ -161,23 +207,34 @@ struct Model
         # Loop over all unique species pairs then over all combinations of their shells. 
         for (zₙ, (zᵢ, shellsᵢ)) in enumerate(basis_definition_sorted)
             for (zⱼ, shellsⱼ) in basis_definition_sorted[zₙ:end]
+                homo_atomic = zᵢ == zⱼ
                 for (n₁, ℓ₁) in enumerate(shellsᵢ), (n₂, ℓ₂) in enumerate(shellsⱼ)
+                    homo_orbital = n₁ == n₂
+
                     # Skip symmetrically equivalent interactions. 
-                    zᵢ == zⱼ && n₁ > n₂ && continue
+                    homo_atomic && n₁ > n₂ && continue
                     
-                    if zᵢ == zⱼ
+                    if homo_atomic
                         id = (zᵢ, n₁, n₂)
                         ace_basis = ace_basis_on( # On-site bases
-                            ℓ₁, ℓ₂, gather(on_site_parameters, id)...)
-                        # on_sites[(zᵢ, n₁, n₂)] = Basis(ace_basis, (zᵢ, n₁, n₂))
-                        on_sites[(zᵢ, n₁, n₂)] = OnSiteBasis(ace_basis, id)
+                            ℓ₁, ℓ₂, on_site_parameters[id]...)
+
+                        on_sites[(zᵢ, n₁, n₂)] = Basis(ace_basis, id)
                     end
 
                     id = (zᵢ, zⱼ, n₁, n₂)
                     ace_basis = ace_basis_off( # Off-site bases
-                        ℓ₁, ℓ₂, gather(off_site_parameters, id)...)
-                    # off_sites[(zᵢ, zⱼ, n₁, n₂)] = Basis(ace_basis, (zᵢ, zⱼ, n₁, n₂))
-                    off_sites[(zᵢ, zⱼ, n₁, n₂)] = OffSiteBasis(ace_basis, id)
+                        ℓ₁, ℓ₂, off_site_parameters[id]...)
+                    
+                    # Unless this is a homo-atomic homo-orbital interaction a double basis
+                    # is needed.
+                    if homo_atomic && homo_orbital
+                        off_sites[(zᵢ, zⱼ, n₁, n₂)] = Basis(ace_basis, id)
+                    else
+                        ace_basis_i = ace_basis_off(
+                            ℓ₂, ℓ₁, off_site_parameters[(zⱼ, zᵢ, n₂, n₁)]...)
+                        off_sites[(zᵢ, zⱼ, n₁, n₂)] = Basis(ace_basis, ace_basis_i, id)
+                    end
                 end
             end
         end
@@ -246,9 +303,8 @@ function ACEbase.read_dict(::Val{:HModel}, dict::Dict)::Model
 end
 
 
-
-# Todo: this is mostly to stop terminal spam but needs to be updated
-#       with more meaningful information later on.
+# Todo: this is mostly to stop terminal spam and should be updated
+# with more meaningful information later on.
 function Base.show(io::IO, model::Model)
 
     # Work out if the on/off site bases are fully, partially or un-fitted.
@@ -331,11 +387,11 @@ must be manually instantiated if more fine-grained control is desired.
 - `basis::SymmetricBasis`: ACE basis entity for modelling the specified interaction. 
 
 """
-function off_site_ace_basis(ℓ₁::I, ℓ₂::I, ν::I, deg::I, b_cut::F, e_cutₒᵤₜ::F=5., e_cutᵢₙ::F=0.5,
+function off_site_ace_basis(ℓ₁::I, ℓ₂::I, ν::I, deg::I, b_cut::F, e_cutₒᵤₜ::F=5., e_cutᵢₙ::F=0.05,
     λₙ::F=.5, λₗ::F=.5) where {I<:Integer, F<:AbstractFloat}
 
     # Bond envelope which controls which atoms are seen by the bond.
-    env = CylindricalBondEnvelope(b_cut, e_cutₒᵤₜ, e_cutₒᵤₜ, floppy=false)
+    env = CylindricalBondEnvelope(b_cut, e_cutₒᵤₜ, e_cutₒᵤₜ, floppy=false, λ=0.0)
 
     # Categorical1pBasis is applied to the basis to allow atoms which are part of the
     # bond to be treated differently to those that are just part of the environment.
@@ -354,7 +410,7 @@ end
 
 # Todo: Remove this temporary function
 function off_site_ace_basis(ℓ₁::I, ℓ₂::I, ν::I, deg::I, env::CylindricalBondEnvelope,
-    e_cutᵢₙ::F=2.5, λₙ::F=.5, λₗ::F=.5) where {I<:Integer, F<:AbstractFloat}
+    e_cutᵢₙ::F=0.05, λₙ::F=.5, λₗ::F=.5) where {I<:Integer, F<:AbstractFloat}
 
     # Categorical1pBasis is applied to the basis to allow atoms which are part of the
     # bond to be treated differently to those that are just part of the environment.

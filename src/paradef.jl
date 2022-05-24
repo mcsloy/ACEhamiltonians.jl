@@ -1,494 +1,878 @@
 module Parameters
-import ACEbase.FIO: read_dict, write_dict
-import ACEbase
-using ACEhamiltonians
+using Base, ACEbase
+export Params, GlobalParams, AtomicParams, AzimuthalParams, ShellParams, ParaSet, OnSiteParaSet, OffSiteParaSet, ison
 
-export ParaDef, show, ison, read_dict, write_dict, gather
+# ╔════════════╗
+# ║ Parameters ║
+# ╚════════════╝
+# Parameter related code.z
 
+
+#
 # Todo:
-#   - Inner cut-offs will have to be shorter for bonds to better deal with atoms that
-#     might lie in between two "bonding" atoms.
-#   - Use BasisDef from common instead.
-#   - Force homo-atomic off-site parameter matrices to be symmetric. 
-#   - Refactor read/write_dict methods to make use of vector and matrix
-#     conversion methods already present in ACEbase. 
-
-# Type definition used to simplify ParaDef construction
-TP = Dict{K, Matrix{V}} where {K, V}
-P = Union{R, Dict{K, A}} where {K<:Union{Tuple{I, I}, R}, A<:Any} where {R<:Real, I<:Integer}
-
-# Todo: Move this elsewhere
-BasisDef = Dict{I, Vector{I}} where I<:Integer
-
-"""
-    ParaDef(ν, deg, e_cutₒᵤₜ, e_cutᵢₙ[, bond_cut, λₙ, λₗ])
-
-``ParaDef`` instances specify the parameters to be used when constructing the on/off-site
-models. Each parameter is represented by a dictionary with one entry per-species, or per-
-species-pair in the off-site case. The value of each entry is a matrix whose elements are
-the parameters of the associated shell-shell interactions. The form of these dictionaries
-and their keys/values is discussed in more detail in the "Argument Structure" section.
-
-While parameter definitions can be created manually it is often more convenient to use the
-constructor, as it accepts contracted argument forms. Meaning large parameter definitions
-can be created with comparative ease. See the "Constructor" section for more detail.
-
-# Fields
-- `ν`: maximum correlation order.
-- `deg`: maximum polynomial degree.
-- `e_cutₒᵤₜ`: outer environmental cutoff distance.  
-- `e_cutᵢₙ`: inner environmental cutoff distance.
-- `bond_cut`: bond cutoff distances (off-site-only)
-- `λₙ`: ??? (off-site only) TODO: expand
-- `λₗ`: ??? (off-site only) TODO: expand
-
-# Argument Structure
-## On-site Parameters
-On-site parameters are passed via dictionaries which are keyed by atomic number and valued
-by two dimensional matrices containing one value per shell pair. An arbitrary parameter "p"
-would generally be described like so:
-```
-p = Dict(
-  Zᵢ => [pⁱ₁₁ pⁱ₁₂ ⋯ pⁱ₁ₙ
-        pⁱ₂₁ pⁱ₂₂ ⋯ pⁱ₂ₙ
-         ⋮   ⋮  ⋱  ⋮ 
-        pⁱₙ₁ pⁱₙ₂ ⋯ pⁱₙₙ],
-
-  Zⱼ => [pʲ₁₁ pʲ₁₂ ⋯ pʲ₁ₙ
-        pʲ₂₁ pʲ₂₂ ⋯ pʲ₂ₙ
-         ⋮   ⋮  ⋱  ⋮ 
-        pʲₙ₁ pʲₙ₂ ⋯ pʲₙₙ],
-  ⋯
-)
-```
-Where ``Zᵢ`` is the atomic numbers of species "i" and ``pⁱₘₙ`` is the parameter associated
-with the model representing the on-site interaction between the mᵗʰ & nᵗʰ shells.
-
-There should be one entry in the dictionary for each unique species type and one value for
-each shell pair; thus the call ``p[i][m,n]`` would yield the parameter to be used by the
-on-site model representing the interactions between the mᵗʰ and nᵗʰ shells on species "i".
-It is important to note that: i) the order in which shells are specified must match the
-order in which they appear in the basis definition, and ii) on-site interactions are
-symmetric, thus the matrix ``pⁱ`` must also be symmetric, i.e. ``pⁱₙₘ`` and ``pⁱₘₙ`` must
-be equivalent. For example, the maximum correlation order, ν, of a hydrocarbon system
-with minimal basis would be specified as:
-```
-ν = Dict(1 =>[[2]], 6 =>[3 4 4; 4 5 5; 4 5 5])
-```
-Thus a maximum correlation order of 2 would be used for hydrogen ss interactions and 
-values of 3, 4, & 5 would be used or all carbon ss, sp, & pp interactions respectively.
-
-## Off-site Parameters
-Off-site parameters are specified in a similar manner to their on-site counterparts, but
-with two important differences. Firstly, keys must be tuples rather than integers as they
-now correspond to interactions between pairs of species. Secondly, value matrices are no
-longer required be to be square or symmetric. Off-site Parameter arguments take the
-general form:
-```
-p = Dict(
-  (Zᵢ,Zⱼ) => [pⁱʲ₁₁ pⁱʲ₁₂ ⋯ pⁱʲ₁ₙ
-            pⁱʲ₂₁ pⁱʲ₂₂ ⋯ pⁱʲ₂ₙ
-             ⋮   ⋮  ⋱  ⋮ 
-            pⁱʲₘ₁ pⁱʲₘ₂ ⋯ pⁱʲₘₙ],
-  ⋯
-)
-
-```
-Where the key ``(Zₘ, Zₙ)`` specifies the atomic numbers of the species pair to which its
-parameters pertain; and``pⁱʲₘ`` is the value associated with the interaction between
-shells "m" and "n" on species "i" and "j" respectively. Again, the order in which the
-values are specified in the matrix must match up with the order of the basis definition.
-Finally, each species pair should appear only once i.e. if the key ``(Zᵢ,Zⱼ)`` is present
-then the key ``(Zⱼ,Zᵢ)`` should not be, as they both represent the same interaction.
-
-## Warnings
-The mixing of on-site and off-site parameters is strictly forbidden. A separate `ParaDef`
-instance is required for each. As the on-site interactions are symmetric their parameter
-matrices must also be. While this restriction does not apply to the off-site interactions
-it is ill-advised to have non-symmetric parameter matrices for homo-atomic interactions.
-
-Off-site interaction keys will be sorted internally; i.e. (6, 1) will be auto-converted
-into (1, 6).
+#  - Parameters:
+#    - Need to enforce limits on key values, shells must be larger than zero and
+#      azimuthal numbers must be non-negative.
+#    - All Params should be combinable, with compound classes generated when combining
+#      different Params types. Compound types should always check the more refined
+#      struct first (i.e. ShellParams<AzimuthalParams<AtomicParams).
+#    - Constructor "build" macro
+#      - Use macro to warn when redundant keys are found.
+#      - Reduce code duplication.
+#      - Add descriptive comments.
+#    - Implement additional methods:
+#      - `in` to check if there are any valid super-keys present which can yield a result.
+#      - `haskey` to check directly if the exact key is present, this will not check for
+#        sub-types, equivalent types and will not convert from shell to azimuthal number.
+#  - ParaSet:
+#    - Implement error checking:
+#      - `Params` instance keys are correct for the expected type of interaction, i.e. a key
+#        should contain two atomic numbers for off-site parameters.
+#    - Ensure the outer cutoff is greater than the inner cutoff.
+#    - Enforce parameter type consistency in a more elegant manner.
+#  - to_dict method:
+#    - Label: Not required
+#    - GlobalParams: 
+#    - AtomicParams: 
+#    - AzimuthalParams: 
+#    - ShellParams: 
 
 
-## Developers Notes
-This will be refactored to account for the fact that homo-atomic off-site parameters must
-be symmetric.
-"""
-mutable struct ParaDef{Ti,Tf}
-    ν::Ti
-    deg::Ti
-    e_cutₒᵤₜ::Tf
-    e_cutᵢₙ::Tf
-    bond_cut::Union{Tf,Nothing}
-    λₙ::Union{Tf,Nothing}
-    λₗ::Union{Tf,Nothing}
+# ╔═══════╗
+# ║ Label ║
+# ╚═══════╝
+# This structure is allows for order agnostic interactions representations; e.g. the
+# interactions (z₁, z₂) and (z₁, z₂) are not only equivalent but are fundamentally the
+# same interaction. For an atomic number pair (z₁, z₂) or a shell number pair (s₁, s₂)
+# the necessary representation could be achieved using a Set. However, this starts to
+# fail when describing interactions by both atomic and shell number (z₁, z₂, s₁, s₂).
+# Furthermore, it is useful to be able indicate that some interactions are sub-types
+# of others; i.e. all the following interactions (z₁, z₂, 1, 1), (z₁, z₂, 1, 2) and
+# (z₁, z₂, 2, 2) are sub-interactions of the (z₁, z₂) interaction type. This property
+# is useful when dealing with groups of interactions specifying parameters.
+#
+# In general it is not intended for the user to interact with `Label` entities directly.
+# Such structures are primarily used in the background. IT should be noted that these
+# structures are designed for ease of use rather than performance; however this should not
+# be an issue given that this is never used in performance critical parts of the code.
+struct Label{N, I}
+    id::NTuple{N, I}
     
+    # Label(i, j, k...)
+    Label(id::Vararg{I, N}) where {I<:Integer, N} = new{N, I}(_process_tuple(id))
+    Label{N, I}(id::Vararg{I, N}) where {I<:Integer, N} = new{N, I}(_process_tuple(id))
 
-    """Default off-site constructor for manual initialisation"""
-    function ParaDef(ν::Ti, deg::Ti, e_cutₒᵤₜ::Tf, e_cutᵢₙ::Tf, bond_cut::Tf, λₙ::Tf, λₗ::Tf
-        ) where {Ti<:TP{Tuple{I,I}, I}, Tf<:TP{Tuple{I,I}, F}
-        } where {I<:Integer, F<:AbstractFloat}
-        # Gather arguments together to simplify manipulation
-        args = (ν, deg, e_cutₒᵤₜ, e_cutᵢₙ, bond_cut, λₙ, λₗ)
+    # Label((i, j, k, ...))
+    Label(id::NTuple{N, I}) where {I<:Integer, N} = new{N, I}(_process_tuple(id))
+    Label{N, I}(id::NTuple{N, I}) where {I<:Integer, N} = new{N, I}(_process_tuple(id))
 
-        # Ensure keys are atomic number minor, i.e. the lowest atomic number is the first
-        # entry in each tuple; e.g. (H-C) not (C-H). This consistency helps simplify the
-        # lower level code.
-        sorted_args = (d -> Dict(issorted(k) ? k=>v : reverse(k)=>collect(v')
-                          for (k, v) in d)).(args)
+    # Label(), Label((,)) () Special cases for an empty Label; used for global interactions
+    Label(id::Tuple{}) = new{0, Int}(id)
+    Label() = new{0, Int}(NTuple{0, Int}())
+    Label{N, I}(id::Tuple{}) where {N, I<:Integer} = new{N, I}(id)
+    Label{N, I}() where {N, I<:Integer} = new{N, I}(NTuple{N, I})
+    
+    # Label(Label)
+    Label(id::Label) = id
 
-        # Ensure no doubly defined interactions exist; e.g. if C-H is present then H-C
-        # must not be. The above key-sort causes redundant keys to vanish, e.g.
-        # Dict((1,6)=>1,(6,1)=>2)→Dict((1,6)=>2). Thus, checking if the number of keys
-        # present in each dictionary changes once the keys have been sorting is enough. 
-        # 1) Get the length of each dictionary & its sorted counterpart.
-        # 2) Ensure the length values within each tuple are the same.
-        # 3) Raise an error if any dictionary's length is found to have changed.  
-        if ~all(.==((i -> length.(keys.(i))).((args, sorted_args))...))
-            error("Off-site dictionaries must not contain symmetrically equivalent keys; "*
-                  "i.e. if key (1, 6) is present then (6, 6) cannot.")
-        end
-
-        # Parameter matrices are expected to be symmetric for homo-atomic species pairs.
-        # The user should be warned if this is not the case.
-        non_sym_keys = unique(vcat(collect.(keys.(filter.(
-            p->~allunique(p.first) && p.second != p.second',  sorted_args)))...))
-
-        if length(non_sym_keys) != 0
-            @warn "Non-symmetric off-site parameter matrices are ill-advised for homoatomic"*
-            " interactions: $(join(non_sym_keys, ", "))"
-        end
+    # Construct from string representation
+    function Label(id::AbstractString)
         
-        new{Ti, Tf}(sorted_args...)
-    end
-
-    """Default on-site constructor for manual initialisation"""
-    function ParaDef(ν::Ti, deg::Ti, e_cutₒᵤₜ::Tf, e_cutᵢₙ::Tf
-        ) where {Ti<:TP{I, I}, Tf<:TP{I, F}
-        } where {I<:Integer, F<:AbstractFloat}
-
-
-        # On-site parameter matrices must be symmetric; error out if any are not.
-        non_sym_keys = unique(vcat(collect.(keys.(filter.(
-            p->p.second != p.second',  (ν, deg, e_cutₒᵤₜ, e_cutᵢₙ))))...))
-
-        if length(non_sym_keys) != 0
-            error("Non-symmetric parameter matrices not permitted for on-site "*
-                  "interactions: $(join(non_sym_keys, ", "))")
-        end
-
-        new{Ti, Tf}(ν, deg, e_cutₒᵤₜ, e_cutᵢₙ, nothing, nothing, nothing)
-    end
-
-    """Dictionary based constructor used to initialise ParaDef instances from Json files"""
-    function ParaDef(dict)
-        # Used to selectively skip off-site only parameters
-        offset = (haskey(dict, "λₙ") && ~isnothing(dict["λₙ"])) ? 0 : 3
-        ParaDef((dict["$i"] for i in fieldnames(ParaDef)[1:end-offset])...)        
-    end
-
-end
-
-"""
-    ParaDef(ν, deg, e_cutₒᵤₜ, e_cutᵢₙ[, bond_cut, λₙ, λₗ])
-
-This enables lengthy parameter sets to be generated without having to manually construct
-each full matrix. However, it is important to note that this just expands the contracted
-definitions, as provided by the user, into their fully verbose forms. The constructor is
-invoked whenever a basis definition is supplied as the first argument. In most instances
-the (on/off-) site can be inferred from context. The exception to this is if only global
-declinations are supplied, in which case the ``site`` keyword argument must be supplied
-and set to either "on" or "off" as appropriate. There are four deceleration schemes that
-are accepted by the constructor; global, species resolved, azimuthal resolved, and shell
-resolved. Each of which is discussed in turn below.
-
-Global assignment is invoked by providing a single value, rather than a dictionary, for a
-parameter. This informs the constructor that this value should be used by all models. For
-example, the maximum correlation order, ν, can be given as a single value "`2`":
-```
-julia> basis_def = Dict(1=>[0], 6=>[0,0,1])
-julia> ν = 2
-julia> parameters = ParaDef(basis_def, ν, 8, site="on")
-julia> println(parameters.ν)
-       Dict(6 => [2 2 2; 2 2 2; 2 2 2], 1 => [2;;])
-```
-It can be seen that this results in all on-site interactions using a common value.
-Alternatively, parameters can be defined per-species, or per-species-pair for off-sites,
-by providing a dictionary valued by a single scalar rather than a matrix:
-```
-julia> ν = Dict(1=>2, 6=>3)
-julia> parameters = ParaDef(basis_def, ν, 8)
-julia> println(parameters.ν)
-       Dict(6 => [3 3 3; 3 3 3; 3 3 3], 1 => [2;;])
-```
-In the above example it can be seen that ν is "2" & "3" for all hydrogen & carbon on-site
-interactions respectively. A finer degree of control over the parameters can be achieved
-using azimuthal resolved decelerations. This allows for values to be specified not only
-for each species but for each unique azimuthal pair on said species.
-```
-julia>#            Hss       Css Csp Cps Cpp
-julia>#             ↓         ↓   ↓   ↓   ↓
-julia> ν = Dict(1=>[2;;], 6=>[3   4;  4   5])
-julia> parameters = ParaDef(basis_def, ν, 8)
-julia> println(parameters.ν)
-       #          s₁ s₂ p₁
-       #          ↓ ↓ ↓
-       Dict(6 => [3 3 4   # ← s₁
-                  3 3 4   # ← s₂
-                  4 4 5], # ← p₁
-            1 => [2;;])
-```
-Here only a single value is provided for hydrogen as it has a single shell, whereas four
-values are provided for carbon as it has two unique shell types (s & p) and thus four
-possible unique interaction types (ss, sp, ps & pp). Finally, parameters can be specified
-down to the shell level. However, this is no different than direct initialisation of a
-``ParaDef`` instance via the base constructor. It is worth noting that decelerations can
-be mixed; e.g.  `Dict(1=>[2;;], 6=>[3 4; 4 5]), 7=>6)`.
-
-"""
-function ParaDef(basis_def::BasisDef, ν::P, deg::P, e_cutₒᵤₜ::P=12.0, e_cutᵢₙ::P=2.0,
-    bond_cut::Union{P, Nothing}=nothing, λₙ::Union{P, Nothing}=nothing,
-    λₗ::Union{P, Nothing}=nothing; site::String="auto")
-
-    # Ensure validity of the `site` argument
-    @assert site in ["on", "off", "auto"] "Invalid site argument given (\"$site\"), valid"*
-                                        " options are \"on\", \"off\" & \"auto\""
-
-    # Collate common and off-site only arguments into a pair of tuples  
-    c_args, off_args = (ν, deg, e_cutₒᵤₜ, e_cutᵢₙ), (bond_cut, λₙ, λₗ)
-
-    # If site auto-detect enabled then infer the correct site. Auto-detection is always
-    # possible so long as either one non-global argument is given or a off-site only
-    # parameter is provided.
-    if site == "auto"
-        # If dictionaries are keyed by tuples; then this must be the off-site case. 
-        if any([keytype(i)<:Tuple for i in c_args if i isa Dict])
-            site = "off"
-
-        # If all arguments are scalar com_args then it is not possible to auto-determine site
-        elseif all([i isa Real for i in c_args])
-            error("Site cannot be auto-resolve if all mutual arguments are specified"*
-                  " globally; please provide the \"site\" keyword argument.")
-
-        # If the site is not off-site, and is not non-inferable then it must be on-site
+        # Strip parentheses if present along with any trailing commas
+        id = rstrip(startswith(id, "(") ? id[2:end-1] : id, ',')
+        # Deal with special empty/"Any" label case 
+        if length(id) == 0 || id == "Any"
+            Label()
+        # Normal label conversion
         else
-            site = "on"
+            Label(Tuple(parse.(Int, split(id, ','))))#
         end
     end
 
-    # If λ terms are given for on-site parameters; issue a warning.
-    if ~(isnothing(λₙ) & isnothing(λₗ) & isnothing(bond_cut)) && site=="on"
-        @warn "Arguments bond_cut, λₙ & λₗ are off-site exclusive and will be ignored." 
-    end
-
-    # Create shorthand for _parameter_expander (reduces verbosity). The parameter
-    # expander is used to expand short-form parameter decelerations as and if necessary.
-    # Expand the λ terms if required; default them to 0.5 if unspecified. Finally,
-    # instantiate the ParDef instance by redirecting to the base constructors.
-    pex = var -> _parameter_expander(var, basis_def, site)
-    if site == "off"
-        off_args_exp = pex.((
-            isnothing(λₙ) ? 12.0 : bond_cut,
-            isnothing(λₙ) ? 0.5 : λₙ,
-            isnothing(λₗ) ? 0.5 : λₗ))
-    else
-        off_args_exp = ()
-    end
-    ParaDef(pex.(c_args)..., off_args_exp...)
-
 end
 
+# ╭───────┬───────────────────╮
+# │ Label │ Equality Operator │
+# ╰───────┴───────────────────╯
+Base.:(==)(x::T₁, y::T₂) where {T₁<:Label, T₂<:Label} = x.id == y.id
+Base.:(==)(x::T₁, y::T₂) where {T₁<:Label, T₂<:NTuple} = x == Label(y)
+Base.:(==)(x::T₁, y::T₂) where {T₁<:Label, T₂<:Integer} = x == Label(y)
+Base.:(==)(x::T₁, y::T₂) where {T₁<:NTuple, T₂<:Label} = Label(x) == y
+Base.:(==)(x::T₁, y::T₂) where {T₁<:Integer, T₂<:Label} = Label(x) == y
 
 
-# Functions and methods associated with the ``ParaDef`` structure 
-
-# These read and write functions allow for ParaDict⇄Dict interconversion. Such methods
-# are most commonly used when writing to and from Json files.
-# read_dict(::Val{:ParaDef}, dict::Dict)::ParaDef = ParaDef(dict)
-# ACEbase.write_dict(p::ParaDef) = Dict("__id__"=>"ParaDef",
-#                               ("$f"=>getfield(p, f) for f in fieldnames(ParaDef))...)
-
-function ACEbase.write_dict(p::ParaDef)
-    # Formats entity as a matrix if appropriate (null-op if v==nothing)
-    from_mat(v) = isnothing(v) ? v : Dict(k=>write_dict(vv) for (k, vv) in v)
-    return Dict(
-        "__id__"=>"ParaDef",
-        ("$f"=>from_mat(getfield(p, f)) for f in fieldnames(ParaDef))...)
-end
-
-function ACEbase.read_dict(::Val{:ParaDef}, dict::Dict)::ParaDef
-    # Matrix objects are read from JSON files as Vector{Vector{Any}} instances. This
-    # function is designed to convert such instances into matrices. 
-    to_mat(v) = isnothing(v) ? v : read_dict(v)
-
-    # Keys are stored a strings and must be converted back to integers
-    format(data) = Dict(parse_key(k)=>to_mat(v) for (k, v) in data)
-
-    on_site = isnothing(get(dict, "bond_cut", nothing)) 
-    return ParaDef(Dict(
-        "ν"=>format(dict["ν"]),
-        "deg"=>format(dict["deg"]),
-        "e_cutₒᵤₜ"=>format(dict["e_cutₒᵤₜ"]),
-        "e_cutᵢₙ"=>format(dict["e_cutᵢₙ"]),
-        "bond_cut"=>on_site ? nothing : format(dict["bond_cut"]),
-        "λₙ"=>on_site ? nothing : format(dict["λₙ"]),
-        "λₗ"=>on_site ? nothing : format(dict["λₗ"]),
-    ))
-end
-
-
-
-function gather(para::ParaDef, z, i, j)
-    # Todo: document this
-    return (f -> getfield(para, f)[z][i, j]).(
-        (:ν, :deg, :e_cutₒᵤₜ, :e_cutᵢₙ))
-end
-
-function gather(para::ParaDef, z_1, z_2, i, j)
-    # Todo: document this
-    return (f -> getfield(para, f)[(z_1, z_2)][i, j]).(
-        (:ν, :deg, :bond_cut, :e_cutₒᵤₜ, :e_cutᵢₙ, :λₙ, :λₗ))
-end    
-
+# ╭───────┬─────────────────╮
+# │ Label │ Subset Operator │
+# ╰───────┴─────────────────╯
+# These are used to check if an interaction represents a sub-interaction of another. For
+# example CₛNₛ, CₛNₚ and CₚNₚ are all considered subtypes of the CN interaction; that is to
+# say (6, 7, 0, 0), (6, 7, 0, 1) & (7, 6, 1, 1) are sub-sets of (6, 7). Note that all
+# interactions are considered to be subtypes of Label((,)); i.e. an empty label is taken
+# to mean "all interactions".
 
 """
-    ison(para_def)
+    A ⊆ B
 
-Returns `true` if the parameter definition represents on-site parameters. 
+Checks if the label `A` is a subset of `B`.  
 """
-ison(para_def::ParaDef) = ~(keytype(para_def.ν)<:Tuple)
-# Note "isoff" isn't implemented as it's just a negation of "ison" & is thus redundant. 
+function Base.:⊆(x::Label{N₁, I}, y::Label{N₂, I}) where {N₁, N₂, I}
 
-# Pretty printing implementation for the ParaDef structure. Without this julia will just
-# vomit out vast amounts of data at the user.
-function Base.show(io::IO, para_def::ParaDef)
-    site = ison(para_def) ? "on" : "off"
-    form = ison(para_def) ? "species" : "species-pairs"
-    entries = join(join.(collect(keys(para_def.ν)), "-"), ", ")
-    print(io, "ParaDef(site=$site, $form=($entries))")
-end
+    # If labels have the same length then check if they are equivalent
+    if N₁≡N₂; return x==y
 
-function Base.:(==)(x::ParaDef, y::ParaDef)
+    # If N₁<N₂ then x cannot be equal to or a subset of y
+    elseif N₁<N₂; false
 
-    # Are the two instances are the same object?
-    if x === y
-        return true
-    # Do they even reference the same site?
-    elseif ison(x) != ison(y)
-        return false
-    end
+    # All interactions are a subsets of the global label Label((,)); i.e. N₂≡0
+    elseif N₂≡0; true
+
+    # One and Two atom labels cannot be equal to or be subsets of one another. 
+    elseif isodd(N₁)⊻isodd(N₂); false
+
+    # Check if the x is a subset of y (one atom) 
+    elseif isodd(N₁); x[1] == y[1]
+
+    # Check if the x is a subset of y (two atom) 
+    elseif iseven(N₁); x[1:2] == y[1:2]
     
-    # Check all fields are identical
-    for f in fieldnames(ParaDef)
-        # If any do not match up then return false
-        if getfield(x, f) != getfield(y, f)
+    else; error("Unknown subset ⊆(Label,Label) call")
+    end
+end
+
+# Routines to handel comparisons with tuples and the reverse subset operator `⊇`. 
+Base.:⊆(x::T₁, y::T₂) where {T₁<:Label, T₂} = x ⊆ Label(y)
+Base.:⊆(x::T₁, y::T₂) where {T₁, T₂<:Label} = Label(x) ⊆ y
+Base.:⊇(x::T₁, y::T₂) where {T₁<:Label, T₂} = y ⊆ x
+Base.:⊇(x::T₁, y::T₂) where {T₁, T₂<:Label} = y ⊆ x
+
+# ╭───────┬───────────────────────╮
+# │ Label │ General Functionality │
+# ╰───────┴───────────────────────╯
+# Length of a label, i.e. how many elements are present in its tuple
+Base.length(::Label{N, I}) where {N, I} = N
+Base.length(::Type{Label{N, I}}) where {N, I} = N
+
+# Indexing
+Base.getindex(x::Label, idx) = x.id[idx]
+Base.lastindex(x::Label) = lastindex(x.id)
+
+# Tuple/integer to Label conversion
+Base.convert(t::Type{Label{N, I}}, x::NTuple{N, I}) where {N, I<:Integer} = t(x)
+Base.convert(t::Type{Label{1, I}}, x::I) where I<:Integer = t(x)
+
+# ╭───────┬──────────────────╮
+# │ Label │ IO Functionality │
+# ╰───────┴──────────────────╯
+Base.show(io::IO, x::Label) = print(io, string(x.id))
+Base.show(io::IO, ::Label{0, I}) where I = print(io, "Any")
+
+
+
+# ╔════════════╗
+# ║ Parameters ║
+# ╚════════════╝
+# These structures provide a means to easily specify and retrieve basis parameters. `Params`
+# entities are created and accessed like dictionaries. Internally these are just dictionaries
+# keyed by `Label` instances. However, the user should never need to access the internal
+# dictionary. These instances are designed to be user friendly first and performant second.
+# The lack of performance is not of concern as this will only ever be accessed once by the
+# code when it gathers the parameters to construct the basis functions.   
+   
+
+# ╭────────┬───────╮
+# │ Params │ Setup │
+# ╰────────┴───────╯
+# This macro just abstracts the highly repetitive constructor code used by `Params` sub-structures.
+macro build(name, N, with_basis)
+    T1 = :(Vararg{Pair{K, V}, N})
+
+    # Function for Tuple->Label conversion 
+    t2l(val::Pair{NTuple{N, I}, V}) where {N, I<:Integer, V} = convert(Pair{Label{N, I}, V}, val)
+
+    if with_basis
+        return quote
+            function $(esc(name))(b_def, arg::$T1) where {K<:Label{$N, I}, V, N} where I<:Integer
+                $(Expr(:call, Expr(:curly, esc(:new), :K, :V), Expr(:call, Dict, :arg), :b_def))
+            end
+
+            function $(esc(name))(b_def, arg::$T1) where {K<:NTuple{$N, I}, V, N} where I<:Integer
+                $(Expr(:call, esc(name), :b_def, Expr(:(...), Expr(:call, :map, esc(t2l), :arg))))
+            end
+        end
+    else
+        return quote
+            function $(esc(name))(arg::$T1) where {K<:Label{$N, I}, V, N} where I<:Integer
+                $(Expr(:call, Expr(:curly, esc(:new), :K, :V), Expr(:call, Dict, :arg)))
+            end
+
+            function $(esc(name))(arg::$T1) where {K<:NTuple{$N, I}, V, N} where I<:Integer
+                $(Expr(:call, esc(name), Expr(:(...), Expr(:call, :map, esc(t2l), :arg))))
+            end
+        end
+    end
+end
+
+
+# ╭────────┬────────────╮
+# │ Params │ Definition │
+# ╰────────┴────────────╯
+"""
+Dictionary-like structures for specifying model parameters.
+
+These are used to provide the parameters needed when constructing models within the
+`ACEhamiltonians` framework. There are currently four `Params` type structures, namely
+`GlobalParams`, `AtomicParams`, `AzimuthalParams`, and `ShellParams`, each offering
+varying levels of specificity.
+
+Each parameter, correlation order, maximum polynomial degree, environmental cutoff
+distance, etc. may be specified using any of the available `Params` based structures.
+However, i) each `Params` instance may represent one, and only one, parameter, and ii)
+on/off-site parameters must not be mixed.
+"""
+abstract type Params{K, V} end
+
+"""
+    GlobalParams(val)
+
+A `GlobalParams` instance indicates that a single value should be used for all relevant
+interactions. Querying such instances will always return the value `val`; so long as the
+query is valid. For example:
+```
+julia> p = GlobalParams(10.)
+GlobalParams{Float64} with 1 entries:
+  () => 10.0
+
+julia> p[1] # <- query parameter associated with H
+10.
+julia> p[(1, 6)] # <- query parameter associated with H-C interaction
+10.
+julia> p[(1, 6, 1, 2)] # <- interaction between 1ˢᵗ shell on H and 2ⁿᵈ shell on C
+10.
+```
+As can be seen the specified value `10.` will always be returned so long as the query is
+valid. These instances are useful when specifying parameters that are constant across all
+bases, such as the internal cutoff distance, as it avoids having to repeatedly specify it
+for each and every interaction.
+
+# Arguments
+ - `val::Any`: value of the parameter
+
+"""
+struct GlobalParams{K, V} <: Params{K, V}
+    _vals::Dict{K, V}
+    
+    @build GlobalParams 0 false
+    # Catch for special case where a single value passed
+    GlobalParams(arg) = GlobalParams(Label()=>arg)
+end
+
+
+"""
+    AtomicParams(k₁=>v₁, k₂=>v₂, ..., kₙ=>vₙ)
+
+These instances allow for parameters to be specified on a species by species basis. This
+equates to one parameter per species for on-site interactions and one parameter per species
+pair for off-site interactions. This will then result in all associated bases associated
+with a specific species/species-pair all using a common value, like so: 
+```
+julia> p_on  = AtomicParams(1=>9., 6=>11.)
+AtomicParams{Float64} with 2 entries:
+  6 => 11.0
+  1 => 9.0
+
+julia> p_off = AtomicParams((1, 1)=>9., (1, 6)=>10., (6, 6)=>11.)
+AtomicParams{Float64} with 3 entries:
+  (6, 6) => 11.0
+  (1, 6) => 10.0
+  (1, 1) => 9.0
+
+# The value 11. is returned for all on-site C interaction queries 
+julia> p_on[(6, 1, 1)] == p_on[(6, 1, 2)] == p_on[(6, 2, 2)] == 11.
+true
+# The value 10. is returned for all off-site H-C interaction queries 
+julia> p_off[(1, 6, 1, 1)] == p_off[(6, 1, 2, 1)] == p_off[(6, 1, 2, 2)] == 10.
+true
+```
+These instances are instantiated in a similar manner to dictionaries and offer a finer
+degree of control over the parameters than `GlobalParams` structures but are not as
+granular as `AzimuthalParams` structures.
+
+# Arguments
+- `pairs::Pair`: a sequence of pair arguments specifying the parameters for each species
+  or species-pair. Valid parameter forms are:
+
+    - on-site: `z₁=>v` or `(z,)=>v` for on-sites
+    - off-site: `(z₁, z₂)=>v` 
+
+  where `zᵢ` represents the atomic number of species `i` and `v` the parameter valued
+  associated with this species or specie pair.
+  
+
+# Notes
+It is important to note that atom pair keys are permutationally invariant, i.e. the keys
+`(1, 6)` and `(6, 1)` are redundant and will overwrite one another like so:
+```
+julia> test = AtomicParams((1, 6)=>10., (6, 1)=>1000.)
+AtomicParams{Float64} with 1 entries:
+  (1, 6) => 1000.0
+
+julia> test[(1, 6)] == test[(6, 1)] == 1000.0
+true
+```
+Finally atomic numbers will be sorted so that the lowest atomic number comes first. However,
+this is only a superficial visual change and queries will still be invariant to permutation.
+"""
+struct AtomicParams{K, V} <: Params{K, V}
+    _vals::Dict{K, V}
+
+    @build AtomicParams 1 false
+    @build AtomicParams 2 false
+    # Catch for special case where keys are integers rather than tuples
+    AtomicParams(arg::Vararg{Pair{I, V}, N}) where {I<:Integer, V, N} = AtomicParams(
+        map(i->((first(i),)=>last(i)), arg)...)
+
+end
+
+
+"""
+    AzimuthalParams(basis_definition, k₁=>v₁, k₂=>v₂, ..., kₙ=>vₙ)
+
+Parameters specified for each azimuthal quantum number of each species. This allows for a
+finer degree of control and is a logical extension of the `AtomicParams` structure. It is
+important to note that `AzimuthalParams` instances must be supplied with a basis definition.
+This allows it to work out the azimuthal quantum number associated with each shell during
+lookup.
+
+```
+# Basis definition describing a H_1s C_2s1p basis set
+julia> basis_def = Dict(1=>[0], 6=>[0, 0, 1])
+julia> p_on = AzimuthalParams(
+    basis_def, (1, 0, 0)=>1, (6, 0, 0)=>2, (6, 0, 1)=>3, (6, 1, 1)=>4)
+AzimuthalParams{Int64} with 4 entries:
+  (6, 0, 0) => 2
+  (1, 0, 0) => 1
+  (6, 1, 1) => 4
+  (6, 0, 1) => 3
+
+julia> p_off = AzimuthalParams(
+    basis_def, (1, 1, 0, 0)=>1, (6, 6, 0, 0)=>2, (6, 6, 0, 1)=>3, (6, 6, 1, 1)=>4,
+    (1, 6, 0, 0)=>6, (1, 6, 0, 1)=>6)
+
+AzimuthalParams{Int64} with 6 entries:
+    (1, 6, 0, 1) => 6
+    (6, 6, 0, 1) => 3
+    (1, 6, 0, 0) => 6
+    (1, 1, 0, 0) => 1
+    (6, 6, 1, 1) => 4
+    (6, 6, 0, 0) => 2
+
+# on-site interactions involving shells 1 % 2 will return 2 as they're both s-shells.
+julia> p_on[(6, 1, 1)] == p_on[(6, 1, 2)] == p_on[(6, 2, 2)] == 2
+true
+
+```
+
+# Arguments
+- `basis_definition::BasisDef`: basis definition specifying the bases present on each
+  species. This is used to work out the azimuthal quantum number associated with each
+  shell when queried.
+- `pairs::Pair`: a sequence of pair arguments specifying the parameters for each unique
+  atomic-number/azimuthal-number pair. Valid forms are:
+  
+   - on-site: `(z, ℓ₁, ℓ₂)=>v`  
+   - off-site: `(z₁, z₂, ℓ₁, ℓ₂)=>v`
+   
+  where `zᵢ` and `ℓᵢ` represents the atomic and azimuthal numbers of species `i` to which
+  the parameter `v` is associated.
+
+# Notes
+While keys are agnostic to the ordering of the azimuthal numbers; the first atomic number
+`z₁` will always correspond to the first azimuthal number `ℓ₁`, i.e.:
+    - `(z₁, ℓ₁, ℓ₂) == (z₁, ℓ₂, ℓ₁)`
+    - `(z₁, z₂, ℓ₁, ℓ₂) == (z₂, z₁, ℓ₂, ℓ₁)`
+    - `(z₁, z₂, ℓ₁, ℓ₂) ≠ (z₁, z₂ ℓ₂, ℓ₁)`
+    - `(z₁, z₂, ℓ₁, ℓ₂) ≠ (z₂, z₁ ℓ₁, ℓ₂)`
+
+"""
+struct AzimuthalParams{K, V} <: Params{K, V}
+    _vals::Dict{K, V}
+    _basis_def
+
+    @build AzimuthalParams 3 true
+    @build AzimuthalParams 4 true
+end
+
+"""
+    ShellParams(k₁=>v₁, k₂=>v₂, ..., kₙ=>vₙ)
+
+`ShellParams` structures allow for individual values to be provided for each and every
+unique interaction. While this proved the finest degree of control it can quickly become
+untenable for systems with large basis sets or multiple species due the shear number of
+variable required.
+```
+# For H1s C2s1p basis set.
+julia> p_on = ShellParams(
+    (1, 1, 1)=>1, (6, 1, 1)=>2, (6, 1, 2)=>3, (6, 1, 3)=>4,
+    (6, 2, 2)=>5, (6, 2, 3)=>6, (6, 3, 3)=>7)
+
+ShellParams{Int64} with 7 entries:
+  (6, 3, 3) => 7
+  (1, 1, 1) => 1
+  (6, 1, 3) => 4
+  (6, 2, 2) => 5
+  (6, 1, 1) => 2
+  (6, 1, 2) => 3
+  (6, 2, 3) => 6
+
+julia> p_off = ShellParams(
+    (1, 1, 1, 1)=>1, (1, 6, 1, 1)=>2, (1, 6, 1, 2)=>3, (1, 6, 1, 3)=>4,
+    (6, 6, 1, 1)=>5, (6, 6, 1, 2)=>6, (6, 6, 1, 3)=>74, (6, 6, 2, 2)=>8,
+    (6, 6, 2, 3)=>9, (6, 6, 3, 3)=>10)
+
+ShellParams{Int64} with 10 entries:
+  (6, 6, 2, 2) => 8
+  (6, 6, 3, 3) => 10
+  (6, 6, 1, 3) => 74
+  (1, 1, 1, 1) => 1
+  (1, 6, 1, 2) => 3
+  (1, 6, 1, 1) => 2
+  (1, 6, 1, 3) => 4
+  (6, 6, 1, 1) => 5
+  (6, 6, 1, 2) => 6
+  (6, 6, 2, 3) => 9
+
+```
+
+# Arguments
+- `pairs::Pair`: a sequence of pair arguments specifying the parameters for each unique
+  shell pair:
+   - on-site: `(z, s₁, s₂)=>v`, interaction between shell numbers `s₁` & `s₂` on species `z`
+   - off-site: `(z₁, z₂, s₁, s₂)=>v`, interaction between shell number `s₁` on species
+   `zᵢ` and shell number `s₂` on species `z₂`.
+
+"""
+struct ShellParams{K, V} <: Params{K, V}
+    _vals::Dict{K, V}
+
+    @build ShellParams 3 false
+    @build ShellParams 4 false
+end
+
+# ╭────────┬───────────────────────╮
+# │ Params │ General Functionality │
+# ╰────────┴───────────────────────╯
+# Return the key and value types of the internal dictionary.
+Base.valtype(::Params{K, V}) where {K, V} = V
+Base.keytype(::Params{K, V}) where {K, V} = K
+Base.valtype(::Type{Params{K, V}}) where {K, V} = V
+Base.keytype(::Type{Params{K, V}}) where {K, V} = K
+
+# Extract keys and values from the internal dictionary (and number of elements)
+Base.keys(x::Params) = keys(x._vals)
+Base.values(x::Params) = values(x._vals)
+Base.length(x::T) where T<:Params = length(x._vals)
+
+# Equality check, mostly use during testing
+function Base.:(==)(x::T₁, y::T₂) where {T₁<:Params, T₂<:Params}
+    dx, dy = x._vals, y._vals
+    # Different type Params are not comparable
+    if T₁ ≠ T₂
+        return false
+    # Different key sets means x & y are different
+    elseif keys(dx) ≠ keys(dy)
+        return false
+    # If any key yields a different value in x from x then x & y are different 
+    else
+        for key in keys(dx)
+            if dx[key] ≠ dy[key]
+                return false
+            end
+        end
+        # Otherwise there is no difference between x and y, thus return true
+        return true
+    end
+end
+
+
+
+# ╭────────┬────────────────────╮
+# │ Params │ Indexing Functions │
+# ╰────────┴────────────────────╯
+"""
+    params_object[key]
+
+This function makes `Params` structures indexable in the same way that dictionaries are.
+This will not only check the `Params` object `params` for the specified key `key` but will
+also check for i) permutationally equivalent matches, i.e. (1, 6)≡(6, 1), and ii) keys
+that `key` is a subtype of i.e. (1, 6, 1, 1) ⊆ (1, 6).
+
+Valid key types are:
+ - z/(z,): single atomic number
+ - (z₁, z₂): pair of atomic numbers
+ - (z, s₁, s₂): single atomic number with pair of shell numbers
+ - (z₁, z₂, s₁, s₂): pair of atomic numbers with pair of shell numbers
+
+This is primarily intended to be used by the code internally, but is left accessible to the
+user.
+"""
+function Base.getindex(x::T, key::K) where {T<:Params, K}
+    # This will not only match the specified key but also any superset it is a part of;
+    # i.e. the key (z₁, z₂, s₁, s₂) will match (z₁, z₂).
+
+    # Block 1: convert shell numbers to azimuthal numbers for the AzimuthalParams case.
+    if T<:AzimuthalParams && !(K<:Integer)
+        if length(key) == 3 
+            key = (key[1], [x._basis_def[key[1]][i] for i in key[2:3]]...)
+        else
+            key = (key[1:2]..., x._basis_def[key[1]][key[3]], x._basis_def[key[2]][key[4]])
+        end
+    end
+
+    # Block 2: identify closest viable key.
+    super_key = filter(k->(key ⊆ k), keys(x))
+
+    # Block 3: retrieve the selected key.
+    if length(super_key) ≡ 0
+        throw(KeyError(key))
+    else
+        return x._vals[first(super_key)]
+    end
+end
+
+
+# ╭────────┬──────────────────╮
+# │ Params │ IO Functionality │
+# ╰────────┴──────────────────╯
+"""Full, multi-line string representation of a `Param` type objected"""
+function _multi_line(x::T) where T<:Params
+    i = length(keytype(x._vals).types[1].types) ≡ 1 ? 1 : Base.:(:)
+    v_string = join(["$(k[i]) => $v" for (k, v) in x._vals], "\n  ")
+    return "$(nameof(T)){$(valtype(x))} with $(length(x._vals)) entries:\n  $(v_string)"
+end
+
+
+function Base.show(io::O, x::T) where {T<:Params, O<:IO}
+    # If printing an isolated Params instance, just use the standard multi-line format
+    if !haskey(io.dict, :SHOWN_SET)
+        print(io, _multi_line(x))
+    # If the Params is being printed as part of a group then a more compact
+    # representation is needed.
+    else
+        # Create a slicer remove braces from tuples of length 1 if needed
+        s = length(keytype(x)) == 1 ? 1 : Base.:(:)
+        # Sort the keys to ensure consistency
+        keys_s = sort([j.id for j in keys(x._vals)])  
+        # Only show first and last keys (or just the first if there is only one)
+        targets = length(x) != 1 ? [[1, lastindex(keys_s)]] : [1]
+        # Build the key list and print the message out
+        k_string = join([k[s] for k in keys_s[targets...]], " … ")
+        print(io, "$(nameof(T))($(k_string))")
+    end
+end
+
+# Special show case: Needed as Base.TTY has no information dictionary 
+Base.show(io::Base.TTY, x::T) where T<:Params = print(io, _multi_line(x))
+
+
+function ACEbase.write_dict(p::T) where T<:Params{K, V} where {K, V}
+    # Recursive and arbitrary value type storage to be implemented later
+    # value_parsable = hasmethod(ACEbase.write_dict, (V))
+
+    dict = Dict(
+        "__id__"=>"Params",
+        "vals"=>Dict(string(k)=>v for (k, v) in p._vals))
+    
+    if T<:AzimuthalParams
+        dict["basis_def"] = p._basis_def
+    end
+
+    return dict
+end
+
+function ACEbase.read_dict(::Val{:Params}, dict::Dict)
+    vals = Dict(Label(k)=>v for (k,v) in dict["vals"])
+    n = length(keytype(vals))
+
+    if n ≡ 0
+        return GlobalParams(vals...)
+    elseif n ≤ 2
+        return AtomicParams(vals...)
+    elseif haskey(dict, "basis_def")
+        return AzimuthalParams(dict["basis_def"], vals...)
+    else
+        return ShellParams(vals...)
+    end
+
+end
+
+
+# ╔═════════╗
+# ║ ParaSet ║
+# ╚═════════╝
+# Containers for collections of `Params` instances. These exist mostly to ensure that
+# all the required parameters are specified and provide a single location where user
+# specified parameters can be collected and checked.
+
+
+# ╭─────────┬───────╮
+# │ ParaSet │ Setup │
+# ╰─────────┴───────╯
+"""Internal function which ensures a specified argument `arg` has the value type `T`."""
+macro guard_type(arg, T)
+    msg = "argument \"$(string(arg))\" must be an $T"
+    quote
+        arg = valtype($(esc(arg)))
+        @assert arg <: $T $msg
+    end
+end
+
+
+# ╭─────────┬────────────╮
+# │ ParaSet │ Definition │
+# ╰─────────┴────────────╯
+"""
+`ParaSet` instances are structures which collect all the required parameter definitions
+for a given interaction type in once place. Once instantiated, the `OnSiteParaSet` and
+`OffSiteParaSet` structures should contain all parameters required to construct all of
+the desired on/off-site bases.
+"""
+abstract type ParaSet end
+
+
+"""
+    OnSiteParaSet(ν, deg, e_cut_out, e_cut_in)
+
+This structure holds all the `Params` instances required to construct the on-site
+bases.
+
+
+# Arguments
+- `ν::Params{K, Int}`: correlation order, for on-site interactions the body order is one
+  more than the correlation order.   
+- `deg::Params{K, Int}`: maximum polynomial degree.
+- `e_cut_out::Parameters{K, Float}`: environment's external cutoff distance.
+- `e_cut_in::Parameters{K, Float}`: environment's internal cutoff distance.
+
+"""
+struct OnSiteParaSet <: ParaSet
+    ν
+    deg
+    e_cut_out
+    e_cut_in
+
+    function OnSiteParaSet(ν::T₁, deg::T₂, e_cut_out::T₃, e_cut_in::T₄
+        ) where {T₁<:Params, T₂<:Params, T₃<:Params, T₄<:Params}
+        @guard_type ν Integer
+        @guard_type deg Integer
+        @guard_type e_cut_out AbstractFloat
+        @guard_type e_cut_in AbstractFloat
+        new(ν, deg, e_cut_out, e_cut_in)
+    end
+
+end
+
+"""
+    OffSiteParaSet(ν, deg, b_cut, e_cut_out, e_cut_in)
+
+This structure holds all the `Params` instances required to construct the off-site
+bases.
+
+# Arguments
+- `ν::Params{K, Int}`: correlation order, for off-site interactions the body order is two
+  more than the correlation order.   
+- `deg::Params{K, Int}`: maximum polynomial degree.
+- `b_cut::Params{K, Float}`: cutoff distance for off-site interactions.
+- `e_cut_out::Params{K, Float}`: environment's external cutoff distance.
+- `e_cut_in::Params{K, Float}`: environment's internal cutoff distance.
+"""
+struct OffSiteParaSet <: ParaSet
+    ν
+    deg
+    b_cut
+    e_cut_out
+    e_cut_in
+    
+    function OffSiteParaSet(ν::T₁, deg::T₂, b_cut::T₃, e_cut_out::T₄, e_cut_in::T₅
+        ) where {T₁<:Params, T₂<:Params, T₃<:Params, T₄<:Params, T₅<:Params}
+        @guard_type ν Integer
+        @guard_type deg Integer
+        @guard_type b_cut AbstractFloat
+        @guard_type e_cut_out AbstractFloat
+        @guard_type e_cut_in AbstractFloat
+        new(ν, deg, b_cut, e_cut_out, e_cut_in)
+    end
+
+end
+
+# ╭─────────┬───────────────────────╮
+# │ ParaSet │ General Functionality │
+# ╰─────────┴───────────────────────╯
+function Base.:(==)(x::T, y::T) where T<:ParaSet
+    # Check that all fields are equal to one another
+    for field in fieldnames(T)
+        # If any do not match then return false
+        if getfield(x, field) ≠ getfield(y, field)
             return false
         end
     end
-    
-    # If there are no difference they they must be equivalent
+
+    # If all files match then return true
     return true
-
 end
 
-# Helper functions used by the `ParaDef` structure or its constructors
 
-# Identifies unique vales in a vector and returns a series of vectors
-# specifying the indices at which each unique element is found.
-_unique_indices = vec -> map(k -> findall(vec .== k), unique(vec))
-
-# Internal functions to help convert vectors/vectors of vectors to matrices
-_vector_to_matrix(x::Vector{R}) where R<:Real = reshape(x, 1, length(x))
-_vector_to_matrix(x::Vector{Vector{R}}) where R<:Real = mapreduce(permutedims, vcat, x)
-
-function _parameter_expander(parameters::Union{Real, Dict{K, A}, Nothing}, basis_def::BasisDef,
-    site::String) where {A<:Any, K<:Union{I, Tuple{I,I}}} where I<:Integer
-    # This dispatch mostly acts as a proxy to i) ensure all function calls can be made
-    # with an identical signature, and ii) to handel global parameter decelerations. 
+# ╭─────────┬────────────────────────────────╮
+# │ ParaSet │ Miscellaneous Helper Functions │
+# ╰─────────┴────────────────────────────────╯
+# Returns true if a `ParaSet` corresponds to an on-site interaction.
+ison(::OnSiteParaSet) = true
+ison(::OffSiteParaSet) = false
 
 
-    # Ensure validity of the `site` argument
-    @assert site in ["on", "off", "auto"] "Invalid site argument given (\"$site\"), valid"*
-                                          " options are \"on\", \"off\" & \"auto\""
+# ╭─────────┬──────────────────╮
+# │ ParaSet │ IO Functionality │
+# ╰─────────┴──────────────────╯
+function ACEbase.write_dict(p::T) where T<:ParaSet
+    dict = Dict(
+        "__id__"=>"ParaSet",
+        (string(fn)=>write_dict(getfield(p, fn)) for fn in fieldnames(T))...)
+    return dict
+end
 
-    # Global parameter declarations are converted into their species resolved equivalents 
-    # and are then fed back into the expander. Note, auto-site resolution is not possible
-    # for global parameter declarations.
-    if parameters isa Real
-        species = collect(keys(basis_def))
-        if site == "on"
-            parameters = Dict(s => parameters for s in species)
-        elseif site == "off"
-            parameters = Dict((s₁<=s₂ ? (s₁, s₂) : (s₂, s₁))=> parameters
-                              for (i, s₁) in enumerate(species)
-                              for s₂ in species[i:end])
-        else
-            error("Site cannot be auto-resolve for global declarations.")
-        end
+
+function ACEbase.read_dict(::Val{:ParaSet}, dict::Dict)
+    if haskey(dict, "b_cut")
+        return OffSiteParaSet((
+            ACEbase.read_dict(dict[i]) for i in
+            ["ν", "deg", "b_cut", "e_cut_out", "e_cut_in"])...)
+    else
+        return OnSiteParaSet((
+            ACEbase.read_dict(dict[i]) for i in
+            ["ν", "deg", "e_cut_out", "e_cut_in"])...)
     end
-
-    # Now that any global site declarations have been down-converted to their species
-    # resolved equivalents, the main expansion subroutines can now take over.
-    # return _parameter_expander(parameters, basis_def)
-    return _parameter_expander(parameters, basis_def)
 end
 
 
-function _parameter_expander(
-    parameters::Dict{K, A}, basis_def::BasisDef) where {K<:Union{Tuple{I, I}, I}} where {I<:Integer, A<:Any}
-    new_parameters, type = nothing, nothing
 
-    for (i, (species, parameter)) in enumerate(parameters)
+# ╭─────────┬────────────────────╮
+# │ ParaSet │ Indexing Functions │
+# ╰─────────┴────────────────────╯
+"""
+    on_site_para_set[key]
 
-        # Ensure any vectors are up-converted to matrices; this makes life easier
-        # from both a user and a developmental perspective.   
-        if parameter isa Vector parameter = _vector_to_matrix(parameter) end
+Indexing an `OnSiteParaSet` instance will index each of the internal fields and return
+their results in a tuple, i.e. calling `res = on_site_para_set[key]` equates to calling
+```
+res = (
+    on_site_para_set.ν[key], on_site_para_set.deg[key],
+    on_site_para_set.e_cut_out[key], on_site_para_set.e_cut_in[key])
+```
 
-        # Initialise new_parameter dictionary & infer expected type; if "parameter" is a
-        # matrix then the primitive type must be extracted via the .parameters attribute,
-        if i == 1
-            type = typeof(parameter)
-            type = isprimitivetype(type) ? type : type.parameters[1]
-            new_parameters = Dict{typeof(species), Matrix{type}}()
+This is mostly intended as a convenience function.
+"""
+function Base.getindex(para::OnSiteParaSet, key)
+    return (
+        para.ν[key], para.deg[key],
+        para.e_cut_out[key], para.e_cut_in[key])
+end
+
+
+"""
+    off_site_para_set[key]
+
+Indexing an `OffSiteParaSet` instance will index each of the internal fields and return
+their results in a tuple, i.e. calling `res = off_site_para_set[key]` equates to calling
+```
+res = (
+    off_site_para_set.ν[key], off_site_para_set.deg[key], off_site_para_set.b_cut[key],
+    off_site_para_set.e_cut_out[key], off_site_para_set.e_cut_in[key])
+```
+
+This is mostly intended as a convenience function.
+"""
+function Base.getindex(para::OffSiteParaSet, key)
+    return (
+        para.ν[key], para.deg[key], para.b_cut[key],
+        para.e_cut_out[key], para.e_cut_in[key])
+end
+
+
+
+# ╔═══════════════════════════╗
+# ║ Internal Helper Functions ║
+# ╚═══════════════════════════╝
+
+"""
+Sort `Label` tuples so that the lowest atomic-number/shell-number comes first for the
+two/one atom interaction labels. If more than four integers are specified then an error
+is raised.
+"""
+
+"""
+    _process_ctuple(tuple)
+
+Preprocess tuples prior to their conversion into `Label` instances. This ensures that
+tuples are ordered so that:
+ 1. the lowest atomic number comes first, but only if multiple atomic numbers are specified.
+ 2. the lowest shell number comes first, but only where this does not conflict with point 1.
+
+An error is then raised if the tuple is of an unexpected length. permitted lengths are:
+ - 1/(z) single atomic number.
+ - 2/(z₁, z₂) pair of atomic numbers
+ - 3/(z, s₁, s₂) single atomic number and pair of shell numbers
+ - 4/(z₁, z₂, s₁, s₂) pair of atomic numbers and a pair of shell numbers.
+
+Note that in the latter case s₁ & s₂ correspond to shells on z₁ & z₂ respectively thus
+if z₁ and z₂ are flipped due to z₁>z₂ then s₁ & s₂ must also be shuffled.
+
+This os intended only to be used internally and only during the construction of `Label`
+instances.
+"""
+function _process_tuple(x::NTuple{N, I}) where {N, I<:Integer}
+    if N <= 1; x
+    elseif N ≡ 2; x[1] ≤ x[2] ? x : reverse(x)
+    elseif N ≡ 3; x[2] ≤ x[3] ? x : x[[1, 3, 2]]
+    elseif N ≡ 4
+        if x[1] > x[2] || ((x[1] ≡ x[2]) && (x[3] > x[4])); x[[2, 1, 4, 3]]
+        else; x
         end
-
-        # Fetch the shell lists for the relevant species then work out i) the total number
-        # of shells and ii) the number of different shell types on each species.
-        shells = map(x -> basis_def[x], tuple(species...))[[1, end]]
-        ns₁, ns₂ = length.(shells)
-        nus₁, nus₂ = length.(unique.(shells))
-         
-        if parameter isa Real  # Species resolved declarations
-            parameter = fill(parameter, (ns₁, ns₂))
-    
-        elseif length(parameter) == nus₁ * nus₂  # azimuthal resolved declarations
-            # Build a matrix for the expanded parameter definition, loop over all unique
-            # shell pairs and assign the specified value to the associated interactions.
-            mat = Matrix{type}(undef, ns₁, ns₂)
-            idxs₁, idxs₂ = enumerate.(_unique_indices.(shells))
-            for (o₁,idx₁)=idxs₁, (o₂,idx₂)=idxs₂
-                for i=idx₁, j=idx₂
-                    mat[i,j] = parameter[o₁, o₂]
-                end
-            end
-            parameter = mat
-        
-        # One value per shell-pair indicate full declarations; thus no expansion is
-        # required. This check acts only as a safeguard against malformed declarations.
-        elseif length(parameter) != ns₁ * ns₂
-            # Build a, hopefully, helpful error message
-            sg, sp = join(size(parameter),"×"), join(species,"-")
-            site = species isa Tuple ? "off" : "on"
-            error("Malformed $site-site parameter matrix ($sg) given for $sp; expected"*
-                  " matrix shapes are $nus₁×$nus₂ (azimuthal) & $ns₁×$ns₂ (full).")
-        end
-
-        # Add the full parameter declaration to the new_parameters dictionary
-        setindex!(new_parameters, parameter, species)
-
+    else
+        error(
+            "Label may contain no more than four integers, valid formats are:\n"*
+            "  ()\n  (z₁,)\n  (z₁, s₁, s₂)\n  (z₁, z₂)\n  (z₁, z₂, s₁, s₂)")
     end
-    return new_parameters
 end
+
+
+# # Guards type conversion of dictionaries keyed with `Label` entities. This is done to
+# # ensure that a meaningful message is given to the user when a key-collision occurs.
+# function _guarded_convert(t::Type{Dict{Label{N, I}, V}}, x::Dict{NTuple{N, I}, V}) where {N, I<:Integer, V}
+#     try
+#         return convert(t, x)
+#     catch e
+#         if e.msg == "key collision during dictionary conversion" 
+#             r_keys = _redundant_keys([k for k in keys(x)])
+#             error("Redundant keys found:\n$(join(["  - $(join(i, ", "))" for i in r_keys], "\n"))")
+#         else
+#             rethrow(e)
+#         end
+#     end
+# end
+
+# # Collisions cannot occur when input dictionary is keyed by integers not tuples
+# _guarded_convert(t::Type{Dict{Label{1, I}, V}}, x::Dict{I, V}) where {N, I<:Integer, V} = convert(t, x)
+
+
+# function _redundant_keys(keys_in::Vector{NTuple{N, I}}) where {I<:Integer, N}
+#     duplicates = []
+#     while length(keys_in) ≥ 1
+#         key = Label(pop!(keys_in))
+#         matches = [popat!(keys_in, i) for i in findall(i -> i == key, keys_in)]
+#         if length(matches) ≠ 0
+#             append!(duplicates, Ref((key, matches...)))
+#         end
+#     end
+#     return duplicates
+# end
 
 end
