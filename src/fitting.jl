@@ -27,7 +27,7 @@ export assemble_ls_new, fit!, predict, predict!
 #     no errors caused when importing it.
 #   - Remove hard coded matrix type from the predict function.
 
-function _evaluateval_real(Aval)
+function _evaluate_real(Aval)
 
     n₁, n₂ = size(Aval[1])
     ℓ₁, ℓ₂ = Int((n₁ - 1) / 2), Int((n₂ - 1) / 2)
@@ -81,7 +81,7 @@ function _evaluateval_real(Aval)
 end
 
 
-function _assemble_ls(basis::SymmetricBasis, data::DataSet, zero_mean::Bool=false)
+function _assemble_ls(basis::SymmetricBasis, data::T, zero_mean::Bool=false) where T<:AbstractData
     # This will be rewritten once the other code has been refactored.
 
     # Should `A` not be constructed using `acquire_B!`?
@@ -93,7 +93,7 @@ function _assemble_ls(basis::SymmetricBasis, data::DataSet, zero_mean::Bool=fals
     # at a later data if this layout is not found to be strictly necessary.
     cfg = ACEConfig.(data.states)
     Aval = evaluate.(Ref(basis), cfg)
-    A = permutedims(reduce(hcat, _evaluateval_real.(Aval)), (2, 1))
+    A = permutedims(reduce(hcat, _evaluate_real.(Aval)), (2, 1))
     
     Y = [data.values[i, :, :] for i in 1:n₀]
 
@@ -125,7 +125,7 @@ end
 
 
 # Basis fitting
-function fit!(basis::T, data::DataSet, zero_mean::Bool=false) where T<:Basis
+function fit!(basis::T₁, data::T₂, zero_mean::Bool=false) where {T₁<:Basis, T₂<:AbstractData}
     # Lambda term should not be hardcoded to 1e-7!
 
     # Get the basis function's scaling factor (?)
@@ -135,65 +135,132 @@ function fit!(basis::T, data::DataSet, zero_mean::Bool=false) where T<:Basis
     Φ, Y, x̄ = _assemble_ls(basis.basis, data, zero_mean)
     
     # Assign the mean value to the basis set
-    basis.mean = x̄
+    basis.mean .= x̄
 
     # Solve the least squares problem and get the coefficients
-    basis.coefficients = collect(solve_ls(Φ, Y, 1e-7, Γ, "LSQR"))
+    basis.coefficients .= collect(solve_ls(Φ, Y, 1e-7, Γ, "LSQR"))
 
-    if T<:DoubleBasis
+    if T₁<:AnisoBasis
         Γ = Diagonal(scaling(basis.basis_i, 2))
         Φ, Y, x̄ = _assemble_ls(basis.basis_i, data', zero_mean)
-        basis.mean_i = x̄
-        basis.coefficients_i = collect(solve_ls(Φ, Y, 1e-7, Γ, "LSQR"))
+        basis.mean_i .= x̄
+        basis.coefficients_i .= collect(solve_ls(Φ, Y, 1e-7, Γ, "LSQR"))
     end
 
     nothing
 end
 
+
+
+
 # Model fitting
-function fit!(model::Model, systems::Vector{Group}, target::Symbol)
+# This should be cleaned up so that it can be abstracted and the fitting opperation 
+# passed off to ACEfit. 
+function fit!(
+    model::Model, systems::Vector{Group}, target::Symbol;
+    tol::F=0.0) where F<:AbstractFloat
     # Section 1: Gather the data
 
-    @assert target in [:H, :S]
+    @assert target in [:H, :S, :Hg, :Sg]
+    # These dictionaries should be merged.
     on_site_data = Dict{Basis, DataSet}()
     off_site_data = Dict{Basis, DataSet}()
 
-    add_data!(dict, key, data) = dict[key] = data + getkey(dict, key, nothing) 
-
-    get_matrix = target ≡ :H ? load_hamiltonian : load_overlap # Todo: Uncomment
-    # get_matrix = load_hamiltonian_gamma
+    if target ≡ :H
+        get_matrix = load_hamiltonian
+        gamma = false
+    elseif target ≡ :S
+        get_matrix = load_overlap
+        gamma = false
+    elseif target ≡ :Hg
+        get_matrix = load_hamiltonian_gamma
+        gamma = true
+    elseif target ≡ :Sg
+        get_matrix = load_overlap_gamma
+        gamma = true
+    end
     
     # Loop over the specified systems
     for system in systems
+        # Move this to logging 
+        system_name = "$(basename(HDF5.filename(system))):$(HDF5.name(system))"
+        println("Loading: $(system_name)")
         # Load the required data from the database entry
         matrix = get_matrix(system)
         atoms = load_atoms(system)
-        # images = gamma_only(system) ? [0 0 0] : load_cell_translations(system)
+        images = gamma_only(system) || gamma ? nothing : load_cell_translations(system)
         
 
         # Loop over the on site bases and collect the appropriate data
         for basis in values(model.on_site_bases)
             # data_set = collect_data(matrix, basis, atoms, model.basis_definition, images)
-            data_set = collect_data(matrix, basis, atoms, model.basis_definition)
-            add_data!(on_site_data, basis, data_set)
+            data_set = collect_data(matrix, basis, atoms, model.basis_definition, images; tol=tol)
+
+            if haskey(on_site_data, basis)
+                on_site_data[basis] = on_site_data[basis] + data_set
+            else
+                on_site_data[basis] = data_set
+            end
+
         end 
 
         # Repeat for the off-site models
         for basis in values(model.off_site_bases)
             # data_set = collect_data(matrix, basis, atoms, model.basis_definition, images)
-            data_set = collect_data(matrix, basis, atoms, model.basis_definition)
-            add_data!(off_site_data, basis, data_set)
+            data_set = collect_data(matrix, basis, atoms, model.basis_definition, images; tol=tol)
+            # Remove data for bonds outside of the allowed cutoff
+            data_set = filter_bond(data_set, envelope(basis).r0cut * 1.01)
+            
+            # As ACE does not currently obey bond inversion symmetry the symmetrically
+            # equivalent datasets must also be trained on. This is done intrinsically for
+            # hetro-orbital interactions due to the use of dual models. However, the
+            # "inverse" data must be added manually for homo-orbital interactions. 
+            if (basis.id[1] == basis.id[2]) && (basis.id[3] == basis.id[4])
+                data_set += data_set'
+            end
+
+            if haskey(off_site_data, basis)
+                off_site_data[basis] = off_site_data[basis] + data_set
+            else
+                off_site_data[basis] = data_set
+            end
+
         end         
     end
 
-    # Fit the on-site models
-    for (basis, data_set) in on_site_data
+    # DEBUGGING
+    ks = collect(keys(off_site_data))
+    s = sortperm([i.id for i in ks], rev=true)
+
+    for basis in ks[s]
+        data_set = off_site_data[basis]
+        if length(data_set) ≡ 0
+            @warn "Cannot fit $(basis.id): no matching data-points found (filters may be too aggressive)"
+            continue
+        end
+        println("Fitting: $(basis.id)")
         fit!(basis, data_set)
     end
 
-    for (basis, data_set) in off_site_data
+    # This should be a single loop not two loops
+    # Fit the on-site models
+    for (basis, data_set) in on_site_data
+        if length(data_set) ≡ 0
+            @warn "Cannot fit $(basis.id): no matching data-points found (filters may be too aggressive)"
+            continue
+        end
+        println("Fitting: $(basis.id)")
         fit!(basis, data_set)
     end
+
+    # for (basis, data_set) in off_site_data
+    #     if length(data_set) ≡ 0
+    #         @warn "Cannot fit $(basis.id): no matching data-points found (filters may be too aggressive)"
+    #         continue
+    #     end
+    #     println("Fitting: $(basis.id)")
+    #     fit!(basis, data_set)
+    # end
 end
 
 
@@ -252,18 +319,18 @@ end
 # Fill a matrix with the results of a single state
 # function predict!(values::Matrix{F}, basis::Basis, states::Vector{S}) where {F<:AbstractFloat, S<:AbstractState}
 #     A = evaluate(basis.basis, ACEConfig(states))
-#     B = _evaluateval_real(A)
+#     B = _evaluate_real(A)
 #     values .= (basis.coefficients' * B) + basis.mean
 # end
 
 # Fill a matrix with the results of a single state
 function predict!(values::AbstractArray{F, 2}, basis::T, state::Vector{S}) where {F<:AbstractFloat, T<:Basis, S<:AbstractState}
     A = evaluate(basis.basis, ACEConfig(state))
-    B = _evaluateval_real(A)
+    B = _evaluate_real(A)
     values .= (basis.coefficients' * B) + basis.mean
-    if T<:DoubleBasis
+    if T<:AnisoBasis
         A = evaluate(basis.basis_i, ACEConfig(inv.(state)))
-        B = _evaluateval_real(A)
+        B = _evaluate_real(A)
         values .= (values + ((basis.coefficients_i' * B) + basis.mean_i)') / 2.0
     end
 end
@@ -273,11 +340,11 @@ end
 function predict!(values::Array{F, 3}, basis::T, states::Vector{Vector{S}}) where {F<:AbstractFloat, T<:Basis, S<:AbstractState}
     for (n, state) in enumerate(ACEConfig.(states))
         A = evaluate(basis.basis, state)
-        B = _evaluateval_real(A)
+        B = _evaluate_real(A)
         values[n, :, :] = (basis.coefficients' * B) + basis.mean
-        if T<:DoubleBasis
+        if T<:AnisoBasis
             A = evaluate(basis.basis_i, ACEConfig(inv.(state)))
-            B = _evaluateval_real(A)
+            B = _evaluate_real(A)
             values[n, :, :] .= (values[n, :, :] + ((basis.coefficients_i' * B) + basis.mean_i)') / 2.0
         end
     end
@@ -290,11 +357,11 @@ end
 function predict!(values::Vector{Any}, basis::T, states::Vector{Vector{S}}) where {T<:Basis, S<:AbstractState}
     for (n, state) in enumerate(ACEConfig.(states))
         A = evaluate(basis.basis, state)
-        B = _evaluateval_real(A)
+        B = _evaluate_real(A)
         values[n][:, :] .= (basis.coefficients' * B) + basis.mean
-        if T<:DoubleBasis
+        if T<:AnisoBasis
             A = evaluate(basis.basis_i, ACEConfig(inv.(state)))
-            B = _evaluateval_real(A)
+            B = _evaluate_real(A)
             values[n][:, :] .= (values[n][:, :] + ((basis.coefficients_i' * B) + basis.mean_i)') / 2.0
         end
     end
@@ -306,7 +373,7 @@ end
 # function predict!(values::Vector{Matrix{F}}, basis::Basis, states::Vector{Vector{S}}) where {F<:AbstractFloat, S<:AbstractState}
 #     for (n, state) in enumerate(ACEConfig.(states))
 #         A = evaluate(basis.basis, state)
-#         B = _evaluateval_real(A)
+#         B = _evaluate_real(A)
 #         values[n][:, :] .= (basis.coefficients' * B) + basis.mean
 #     end
 # end
@@ -433,11 +500,12 @@ function predict(model::Model, atoms::Atoms)
 
             # Identify atomic blocks & remove homo-atomic duplicates
             blocks_idxs = off_site_blocks(locate_blocks(zᵢ, zⱼ, atoms))
-            blocks_idxs = zᵢ == zⱼ ? upper_blocks(blocks_idxs) : blocks_idxs
+            # DEBUGGING: Predict all elements (double compute)
+            # blocks_idxs = zᵢ == zⱼ ? upper_blocks(blocks_idxs) : blocks_idxs
 
             # Todo: it would be best to ensure that bases with similar envelopes are 
             # looped over one after the other to prevent having to regenerated similar
-            # states. Currently an arbitrary envolope 
+            # states. Currently an arbitrary envelope 
 
             # Generate the bond ACE states
             current_envelope = nothing

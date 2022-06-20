@@ -4,7 +4,8 @@ using HDF5: Group
 using ACE, SparseArrays
 using ACE: SymmetricBasis, SphericalMatrix, Utils.RnYlm_1pbasis, SimpleSparseBasis,
            CylindricalBondEnvelope, Categorical1pBasis, cutoff_radialbasis
-import ACEbase
+using ACEbase
+import ACEbase: read_dict, write_dict
 using ACEbase.ObjectPools: VectorPool
 using ACEhamiltonians
 using ACEhamiltonians.Parameters: OnSiteParaSet, OffSiteParaSet
@@ -13,7 +14,7 @@ using ACEhamiltonians.Parameters: OnSiteParaSet, OffSiteParaSet
 
 
 
-export Basis, SingleBasis, DoubleBasis, radial, angular, categorical, envelope, Model, on_site_ace_basis, off_site_ace_basis, filter_offsite_be
+export Basis, IsoBasis, AnisoBasis, radial, angular, categorical, envelope, Model, on_site_ace_basis, off_site_ace_basis, filter_offsite_be, is_fitted
 """
 TODO:
     - Figure out what is going on with filter_offsite_be and its arguments.
@@ -30,30 +31,65 @@ TODO:
 #   - Document
 #   - Give type information
 #   - Serialization routines
-#   - `DoubleBasis` instances should raise an error if it is used inappropriately.
+#   - `AnisoBasis` instances should raise an error if it is used inappropriately.
 
+
+# ╔═══════╗
+# ║ Basis ║
+# ╚═══════╝
 
 abstract type Basis{T} end
 
-mutable struct SingleBasis{T} <: Basis{T}
-    basis
+
+"""
+
+
+ACE basis for modelling symmetry invariant interactions.
+
+
+# Fields
+- `basis::SymmetricBasis`:
+- `id::Tuple`:
+- `coefficients::Vector`:
+- `mean::Matrix`:
+
+"""
+struct IsoBasis{T} <: Basis{T}
+    basis::SymmetricBasis
     id
     coefficients
     mean
 
-    function SingleBasis(basis, id)
-        type = real(ACE.valtype(basis).parameters[5])
-        new{type}(basis, id, nothing, nothing)
+    function IsoBasis(basis, id)
+        t = ACE.valtype(basis)
+        F = real(t.parameters[5])
+        new{F}(basis, id, zeros(F, length(basis)), zeros(F, size(zero(t))))
     end
 
-    function SingleBasis(basis, id, coefficients, mean)
+    function IsoBasis(basis, id, coefficients, mean)
         type = real(ACE.valtype(basis).parameters[5])
         new{type}(basis, id, coefficients, mean)
     end
 
 end
 
-mutable struct DoubleBasis{T} <: Basis{T}
+
+"""
+
+ACE basis for modelling symmetry variant interactions.
+
+
+- `basis::SymmetricBasis`:
+- `basis_i::SymmetricBasis`:
+- `id::Tuple`:
+- `coefficients::Vector`:
+- `coefficients_i::Vector`:
+- `mean::Matrix`:
+- `mean_i::Matrix`:
+
+"""
+
+struct AnisoBasis{T} <: Basis{T}
     basis
     basis_i
     id
@@ -62,64 +98,43 @@ mutable struct DoubleBasis{T} <: Basis{T}
     mean
     mean_i
 
-    function DoubleBasis(basis, basis_i, id)
-        type = real(ACE.valtype(basis).parameters[5])
-        new{type}(basis, basis_i,  id, nothing, nothing, nothing, nothing)
+    function AnisoBasis(basis, basis_i, id)
+        t₁, t₂ = ACE.valtype(basis), ACE.valtype(basis_i)
+        F = real(t₁.parameters[5])
+        new{F}(
+            basis, basis_i,  id, zeros(F, length(basis)), zeros(F, length(basis_i)),
+            zeros(F, size(zero(t₁))), zeros(F, size(zero(t₂))))
     end
 
-    function DoubleBasis(basis, basis_i, id, coefficients, coefficients_i, mean, mean_i)
+    function AnisoBasis(basis, basis_i, id, coefficients, coefficients_i, mean, mean_i)
         type = real(ACE.valtype(basis).parameters[5])
         new{type}(basis, basis_i,  id, coefficients, coefficients_i, mean, mean_i)
     end
 end
 
 
-Basis(basis, id) = SingleBasis(basis, id)
-Basis(basis, basis_i, id) = DoubleBasis(basis, basis_i, id)
+Basis(basis, id) = IsoBasis(basis, id)
+Basis(basis, basis_i, id) = AnisoBasis(basis, basis_i, id)
 
+# ╭───────┬───────────────────────╮
+# │ Basis │ General Functionality │
+# ╰───────┴───────────────────────╯ 
+"""Boolean indicating whether a `Basis` instance is fitted; i.e. has non-zero coefficients"""
+is_fitted(basis::IsoBasis) = !all(basis.coefficients .≈ 0.0)
+is_fitted(basis::AnisoBasis) = !(
+    all(basis.coefficients .≈ 0.0) && all(basis.coefficients_i .≈ 0.0))
 
-# mutable struct OnSiteBasis{T} <: Basis{T}
-#     basis
-#     id
-#     coefficients
-#     mean
-
-#     function OnSiteBasis(basis, id)
-#         type = real(ACE.valtype(basis).parameters[5])
-#         new{type}(basis, id, nothing, nothing)
-#     end
-
-#     function OnSiteBasis(basis, id, coefficients, mean)
-#         type = real(ACE.valtype(basis).parameters[5])
-#         new{type}(basis, id, coefficients, mean)
-#     end
-
-# end
-
-
-# mutable struct OffSiteBasis{T} <: Basis{T}
-#     basis
-#     basis_i
-#     id
-#     coefficients
-#     coefficients_i
-#     mean
-#     mean_i
-
-#     function OffSiteBasis(basis, basis_i, id)
-#         type = real(ACE.valtype(basis).parameters[5])
-#         new{type}(basis, basis_i,  id, nothing, nothing, nothing, nothing)
-#     end
-
-#     function OffSiteBasis(basis, basis_i, id, coefficients, coefficients_i, mean, mean_i)
-#         type = real(ACE.valtype(basis).parameters[5])
-#         new{type}(basis, basis_i,  id, coefficients, coefficients_i, mean, mean_i)
-#     end
-# end
-
-function Base.show(io::IO, basis::T) where T<:Basis
-    print(io, "$(nameof(T))(id: $(basis.id), fitted: $(~isnothing(basis.mean)))")
+"""Check if two `Basis` instances are equivalent"""
+function Base.:(==)(x::T₁, y::T₂) where {T₁<:Basis, T₂<:Basis}
+    if T₁ != T₂ || typeof(x.basis) != typeof(y.basis)
+        return false
+    elseif T₁<:AnisoBasis && (typeof(x.basis_i) != typeof(y.basis_i))
+        return false
+    else
+        return all(getfield(x, i) == getfield(y, i) for i in fieldnames(T₁))
+    end
 end
+
 
 """Expected shape of the sub-block associated with the `Basis`; 3×3 for a pp basis etc."""
 Base.size(basis::Basis) = (ACE.valtype(basis.basis).parameters[3:4]...,)
@@ -130,16 +145,15 @@ Base.valtype(::Basis{T}) where T = T
 """Azimuthal quantum numbers associated with the `Basis`."""
 azimuthals(basis::Basis) = (ACE.valtype(basis.basis).parameters[1:2]...,)
 
-
 """Returns a boolean indicating if the basis instance represents an on-site interaction."""
 Parameters.ison(x::Basis) = length(x.id) ≡ 3
 
 
-
 """
-_filter_bases(basis, type)
+    _filter_bases(basis, type)
 
 Helper function to retrieve specific basis function information out of a `Basis` instance.
+This is an internal function which is not expected to be used outside of this module. 
 
 Arguments:
 - `basis::Basis`: basis instance from which function is to be extracted.
@@ -155,7 +169,6 @@ function _filter_bases(basis::Basis, T)
     return functions[1]
 end
 
-
 """Extract and return the radial component of a `Basis` instance."""
 radial(basis::Basis) = _filter_bases(basis, ACE.Rn1pBasis)
 
@@ -168,9 +181,85 @@ categorical(basis::Basis) = _filter_bases(basis, ACE.Categorical1pBasis)
 """Extract and return the bond envelope component of a `Basis` instance."""
 envelope(basis::Basis) = _filter_bases(basis, ACE.BondEnvelope)
 
-###################
-# Model Structure #
-###################
+
+# ╭───────┬──────────────────╮
+# │ Basis │ IO Functionality │
+# ╰───────┴──────────────────╯
+"""
+    write_dict(basis[,hash_basis])
+
+Convert an `IsoBasis` structure instance into a representative dictionary.
+
+# Arguments
+- `basis::IsoBasis`: the `IsoBasis` instance to parsed.
+- `hash_basis::Bool`: ff `true` then hash values will be stored in place of
+  the `SymmetricBasis` objects.
+"""
+function write_dict(basis::T, hash_basis=false) where T<:IsoBasis
+    return Dict(
+        "__id__"=>"IsoBasis",
+        "basis"=>hash_basis ? string(hash(basis.basis)) : write_dict(basis.basis),
+        "id"=>basis.id,
+        "coefficients"=>write_dict(basis.coefficients),
+        "mean"=>write_dict(basis.mean))
+
+end
+
+
+"""
+    write_dict(basis[,hash_basis])
+
+Convert an `AnisoBasis` structure instance into a representative dictionary.
+
+# Arguments
+- `basis::AnisoBasis`: the `AnisoBasis` instance to parsed.
+- `hash_basis::Bool`: ff `true` then hash values will be stored in place of
+  the `SymmetricBasis` objects.
+"""
+function write_dict(basis::T, hash_basis::Bool=false) where T<:AnisoBasis
+    return Dict(
+        "__id__"=>"AnisoBasis",
+        "basis"=>hash_basis ? string(hash(basis.basis)) : write_dict(basis.basis),
+        "basis_i"=>hash_basis ? string(hash(basis.basis_i)) : write_dict(basis.basis_i),
+        "id"=>basis.id,
+        "coefficients"=>write_dict(basis.coefficients),
+        "coefficients_i"=>write_dict(basis.coefficients_i),
+        "mean"=>write_dict(basis.mean),
+        "mean_i"=>write_dict(basis.mean_i))
+end
+
+"""Instantiate an `IsoBasis` instance from a representative dictionary."""
+function ACEbase.read_dict(::Val{:IsoBasis}, dict::Dict)
+    return IsoBasis(
+        read_dict(dict["basis"]),
+        Tuple(dict["id"]),
+        read_dict(dict["coefficients"]),
+        read_dict(dict["mean"]))
+end
+
+"""Instantiate an `AnisoBasis` instance from a representative dictionary."""
+function ACEbase.read_dict(::Val{:AnisoBasis}, dict::Dict)
+    return AnisoBasis(
+        read_dict(dict["basis"]),
+        read_dict(dict["basis_i"]),
+        Tuple(dict["id"]),
+        read_dict(dict["coefficients"]),
+        read_dict(dict["coefficients_i"]),
+        read_dict(dict["mean"]),
+        read_dict(dict["mean_i"]))
+end
+
+
+function Base.show(io::IO, basis::T) where T<:Basis
+    print(io, "$(nameof(T))(id: $(basis.id), fitted: $(is_fitted(basis))")
+end
+
+
+
+# ╔═══════╗
+# ║ Model ║
+# ╚═══════╝
+
 struct Model
     on_site_bases
     off_site_bases
@@ -250,53 +339,70 @@ Base.:(==)(x::Model, y::Model) = (
     x.on_site_bases == y.on_site_bases && x.off_site_bases == y.off_site_bases
     && x.on_site_parameters == y.on_site_parameters && x.off_site_parameters == y.off_site_parameters)
 
+
+# ╭───────┬──────────────────╮
+# │ Model │ IO Functionality │
+# ╰───────┴──────────────────╯
+
 function ACEbase.write_dict(m::Model)
     # ACE bases are stored as hash values which are checked against the "bases_hashes"
     # dictionary during reading. This avoids saving multiple copies of the same object;
     # which is common as `Basis` objects tend to share basis functions.
+
+
+    bases_hashes = Dict{String, Any}()
+
+    function add_basis(basis)
+        # Store the hash/basis pair in the bases_hashes dictionary. As the `write_dict`
+        # method can be quite costly to evaluate it is best to only call it when strictly
+        # necessary; hence this function exists.
+        basis_hash = string(hash(basis))
+        if !haskey(bases_hashes, basis_hash)
+            bases_hashes[basis_hash] = write_dict(basis)
+        end
+    end
+
+    for basis in union(values(m.on_site_bases), values(m.off_site_bases))        
+        add_basis(basis.basis)
+        if basis isa AnisoBasis
+            add_basis(basis.basis_i)
+        end
+    end
+
     dict =  Dict(
         "__id__"=>"HModel",
-        "on_site_bases"=>Dict(k=>write_dict(v) for (k, v) in m.on_site_bases),
-        "off_site_bases"=>Dict(k=>write_dict(v) for (k, v) in m.off_site_bases),
+        "on_site_bases"=>Dict(k=>write_dict(v, true) for (k, v) in m.on_site_bases),
+        "off_site_bases"=>Dict(k=>write_dict(v, true) for (k, v) in m.off_site_bases),
         "on_site_parameters"=>write_dict(m.on_site_parameters),
         "off_site_parameters"=>write_dict(m.off_site_parameters),
         "basis_definition"=>Dict(k=>write_dict(v) for (k, v) in m.basis_definition),
-        "bases_hashes"=>merge(
-            Dict(string(hash(m.basis))=>write_dict(m.basis) for m in values(m.on_site_bases)),
-            Dict(string(hash(m.basis))=>write_dict(m.basis) for m in values(m.off_site_bases))))
+        "bases_hashes"=>bases_hashes)
     
-    # Replace the bases' basis objects with a hash
-    for (k, v) in dict["on_site_bases"]
-        v["basis"] = string(hash(m.on_site_bases[k].basis))
-    end
-    for (k, v) in dict["off_site_bases"]
-        v["basis"] = string(hash(m.off_site_bases[k].basis))
-    end
-
     return dict
 end
 
 
-##########################
-##########################
-# NEED TO UPDATE CODE SO THAT MODELS ARE CALLED BASES
-##########################
-##########################
 function ACEbase.read_dict(::Val{:HModel}, dict::Dict)::Model
 
-    # Construct basis function loop-up dictionary
-    basis_functions = Dict(k=>read_dict(v) for (k, v) in dict["bases_hashes"])
-    ensure_int(v) = v isa String ? parse(Int, v) : v
-    # Regenerate basis function
-    regen_basis(v) = Basis(
-        basis_functions[v["basis"]],
-        Tuple(v["id"]),
-        isnothing(v["coefficients"]) ? nothing : read_dict(v["coefficients"]),
-        isnothing(v["mean"]) ? nothing : read_dict(v["mean"]))
+    function set_bases(target, basis_functions)
+        for v in values(target)
+            v["basis"] = basis_functions[v["basis"]]
+            if v["__id__"] == "AnisoBasis"
+                v["basis_i"] = basis_functions[v["basis_i"]]
+            end
+        end
+    end
 
+    # Replace basis object hashs with the appropriate object. 
+    
+    set_bases(dict["on_site_bases"], dict["bases_hashes"])
+    set_bases(dict["off_site_bases"], dict["bases_hashes"])
+
+    ensure_int(v) = v isa String ? parse(Int, v) : v
+    
     return Model(
-        Dict(parse_key(k)=>regen_basis(v) for (k, v) in dict["on_site_bases"]),
-        Dict(parse_key(k)=>regen_basis(v) for (k, v) in dict["off_site_bases"]),
+        Dict(parse_key(k)=>read_dict(v) for (k, v) in dict["on_site_bases"]),
+        Dict(parse_key(k)=>read_dict(v) for (k, v) in dict["off_site_bases"]),
         read_dict(dict["on_site_parameters"]),
         read_dict(dict["off_site_parameters"]),
         Dict(ensure_int(k)=>read_dict(v) for (k, v) in dict["basis_definition"]))
@@ -309,8 +415,8 @@ function Base.show(io::IO, model::Model)
 
     # Work out if the on/off site bases are fully, partially or un-fitted.
     f = b -> if all(b) "no" elseif all(!, b) "yes" else "partially" end
-    on = f([isnothing(i.mean) for i in values(model.on_site_bases)])
-    off = f([isnothing(i.mean) for i in values(model.off_site_bases)])
+    on = f([!is_fitted(i) for i in values(model.on_site_bases)])
+    off = f([!is_fitted(i) for i in values(model.off_site_bases)])
     
     # Identify the species present
     species = join(sort(unique(getindex.(collect(keys(model.on_site_bases)), 1))), ", ", " & ")
@@ -318,10 +424,10 @@ function Base.show(io::IO, model::Model)
     print(io, "Model(fitted=(on: $on, off: $off), species: ($species))")
 end
 
-##########################
-# ACE Basis Constructors #
-##########################
 
+# ╔════════════════════════╗
+# ║ ACE Basis Constructors ║
+# ╚════════════════════════╝
 
 @doc raw"""
 
@@ -392,25 +498,6 @@ function off_site_ace_basis(ℓ₁::I, ℓ₂::I, ν::I, deg::I, b_cut::F, e_cut
 
     # Bond envelope which controls which atoms are seen by the bond.
     env = CylindricalBondEnvelope(b_cut, e_cutₒᵤₜ, e_cutₒᵤₜ, floppy=false, λ=0.0)
-
-    # Categorical1pBasis is applied to the basis to allow atoms which are part of the
-    # bond to be treated differently to those that are just part of the environment.
-    discriminator = Categorical1pBasis([:bond, :env]; varsym=:be, idxsym=:be)
-
-    # The basis upon which the above entities act.
-    RnYlm = RnYlm_1pbasis(maxdeg=deg, r0=e_cutᵢₙ, rcut=cutoff_radialbasis(env))
-    
-    return SymmetricBasis(
-        SphericalMatrix(ℓ₁, ℓ₂; T=ComplexF64),
-        RnYlm * env * discriminator,
-        SimpleSparseBasis(ν + 1, deg),
-        filterfun=bb -> filter_offsite_be(bb, deg, λₙ, λₗ))
-end
-
-
-# Todo: Remove this temporary function
-function off_site_ace_basis(ℓ₁::I, ℓ₂::I, ν::I, deg::I, env::CylindricalBondEnvelope,
-    e_cutᵢₙ::F=0.05, λₙ::F=.5, λₗ::F=.5) where {I<:Integer, F<:AbstractFloat}
 
     # Categorical1pBasis is applied to the basis to allow atoms which are part of the
     # bond to be treated differently to those that are just part of the environment.
