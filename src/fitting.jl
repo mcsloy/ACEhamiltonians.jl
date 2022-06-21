@@ -11,7 +11,6 @@ using ACEhamiltonians.DataIO: load_hamiltonian_gamma, load_hamiltonian_gamma
 
 export assemble_ls_new, fit!, predict, predict!
 
-
 # Once the bond inversion issue has been resolved the the redundant models will no longer
 # be required. The changes needed to be made in this file to remove the redundant model
 # are as follows:
@@ -182,9 +181,6 @@ function fit!(
     
     # Loop over the specified systems
     for system in systems
-        # Move this to logging 
-        system_name = "$(basename(HDF5.filename(system))):$(HDF5.name(system))"
-        println("Loading: $(system_name)")
         # Load the required data from the database entry
         matrix = get_matrix(system)
         atoms = load_atoms(system)
@@ -228,20 +224,6 @@ function fit!(
         end         
     end
 
-    # DEBUGGING
-    ks = collect(keys(off_site_data))
-    s = sortperm([i.id for i in ks], rev=true)
-
-    for basis in ks[s]
-        data_set = off_site_data[basis]
-        if length(data_set) ≡ 0
-            @warn "Cannot fit $(basis.id): no matching data-points found (filters may be too aggressive)"
-            continue
-        end
-        println("Fitting: $(basis.id)")
-        fit!(basis, data_set)
-    end
-
     # This should be a single loop not two loops
     # Fit the on-site models
     for (basis, data_set) in on_site_data
@@ -249,54 +231,18 @@ function fit!(
             @warn "Cannot fit $(basis.id): no matching data-points found (filters may be too aggressive)"
             continue
         end
-        println("Fitting: $(basis.id)")
         fit!(basis, data_set)
     end
 
-    # for (basis, data_set) in off_site_data
-    #     if length(data_set) ≡ 0
-    #         @warn "Cannot fit $(basis.id): no matching data-points found (filters may be too aggressive)"
-    #         continue
-    #     end
-    #     println("Fitting: $(basis.id)")
-    #     fit!(basis, data_set)
-    # end
+    for (basis, data_set) in off_site_data
+        if length(data_set) ≡ 0
+            @warn "Cannot fit $(basis.id): no matching data-points found (filters may be too aggressive)"
+            continue
+        end
+        fit!(basis, data_set)
+    end
 end
 
-
-# function get_data(model::Model, systems::Vector{Group}, target::Symbol)
-#     # Section 1: Gather the data
-
-#     @assert target in [:H, :S, :Hg]
-#     on_site_data = Dict{Basis, DataSet}()
-#     off_site_data = Dict{Basis, DataSet}()
-
-#     add_data!(dict, key, data) = dict[key] = data + getkey(dict, key, nothing) 
-
-#     get_matrix = target ≡ :H ? load_hamiltonian : load_overlap
-
-#     # Loop over the specified systems
-#     for system in systems
-#         # Load the required data from the database entry
-#         matrix = get_matrix(system)
-#         atoms = load_atoms(system)
-#         images = gamma_only(system) ? [1 1 1] : load_cell_translations(system)
-
-#         # Loop over the on site bases and collect the appropriate data
-#         for basis in values(model.on_site_bases)
-#             data_set = collect_data(matrix, basis, atoms, model.basis_definition, images)
-#             add_data!(on_site_data, basis, data_set)
-#         end 
-
-#         # Repeat for the off-site models
-#         for basis in values(model.off_site_bases)
-#             data_set = collect_data(matrix, basis, atoms, model.basis_definition, images)
-#             add_data!(off_site_data, basis, data_set)
-#         end         
-#     end
-
-#     return on_site_data, off_site_data
-# end
 
 # Todo:
 #   - Discuss why there are so many predict functions here:
@@ -324,59 +270,55 @@ end
 # end
 
 # Fill a matrix with the results of a single state
-function predict!(values::AbstractArray{F, 2}, basis::T, state::Vector{S}) where {F<:AbstractFloat, T<:Basis, S<:AbstractState}
-    A = evaluate(basis.basis, ACEConfig(state))
-    B = _evaluate_real(A)
-    values .= (basis.coefficients' * B) + basis.mean
-    if T<:AnisoBasis
-        A = evaluate(basis.basis_i, ACEConfig(inv.(state)))
+# function predict!(values::AbstractArray{F, 2}, basis::T, state::Vector{S}) where {F<:AbstractFloat, T<:Basis, S<:AbstractState}
+#     if is_fitted(basis)
+#         A = evaluate(basis.basis, ACEConfig(state))
+#         B = _evaluate_real(A)
+#         values .= (basis.coefficients' * B) + basis.mean
+#         if T<:AnisoBasis
+#             A = evaluate(basis.basis_i, ACEConfig(inv.(state)))
+#             B = _evaluate_real(A)
+#             values .= (values + ((basis.coefficients_i' * B) + basis.mean_i)') / 2.0
+#         end
+#     # If the model is not fitted then just return zeros
+#     else
+#         values .= zero(valtype(values))
+#     end
+# end
+
+function predict!(values, basis::T, state::Vector{S}) where {T<:Basis, S<:AbstractState}
+    if is_fitted(basis)
+        A = evaluate(basis.basis, ACEConfig(state))
         B = _evaluate_real(A)
-        values .= (values + ((basis.coefficients_i' * B) + basis.mean_i)') / 2.0
+        values .= (basis.coefficients' * B) + basis.mean
+        if T<:AnisoBasis
+            A = evaluate(basis.basis_i, ACEConfig(inv.(state)))
+            B = _evaluate_real(A)
+            values .= (values + ((basis.coefficients_i' * B) + basis.mean_i)') / 2.0
+        end
+    # If the model is not fitted then just return zeros
+    else
+        values .= zero(valtype(values))
     end
 end
+
 
 
 # Fill a tensor with the results of multiple states
 function predict!(values::Array{F, 3}, basis::T, states::Vector{Vector{S}}) where {F<:AbstractFloat, T<:Basis, S<:AbstractState}
-    for (n, state) in enumerate(ACEConfig.(states))
-        A = evaluate(basis.basis, state)
-        B = _evaluate_real(A)
-        values[n, :, :] = (basis.coefficients' * B) + basis.mean
-        if T<:AnisoBasis
-            A = evaluate(basis.basis_i, ACEConfig(inv.(state)))
-            B = _evaluate_real(A)
-            values[n, :, :] .= (values[n, :, :] + ((basis.coefficients_i' * B) + basis.mean_i)') / 2.0
-        end
+    for (n, state) in enumerate(states)
+        @views predict!(values[n, :, :], basis, state)
     end
 end
-
 
 # Fill multiple arrays with the results from multiple states
 # This is used when filling sub-arrays; this is an important function and should be
 # completely rewritten at a latter date.
-function predict!(values::Vector{Any}, basis::T, states::Vector{Vector{S}}) where {T<:Basis, S<:AbstractState}
-    for (n, state) in enumerate(ACEConfig.(states))
-        A = evaluate(basis.basis, state)
-        B = _evaluate_real(A)
-        values[n][:, :] .= (basis.coefficients' * B) + basis.mean
-        if T<:AnisoBasis
-            A = evaluate(basis.basis_i, ACEConfig(inv.(state)))
-            B = _evaluate_real(A)
-            values[n][:, :] .= (values[n][:, :] + ((basis.coefficients_i' * B) + basis.mean_i)') / 2.0
-        end
+function predict!(values::Vector{A}, basis::T, states::Vector{Vector{S}}) where {A<:Any, T<:Basis, S<:AbstractState}
+    for (n, state) in enumerate(states)
+        @views predict!(values[n], basis, state)
     end
 end
-
-
-# Fill a vector of matrices with the results from multiple states.
-# This is only included for compatibility and should eventual be removed.
-# function predict!(values::Vector{Matrix{F}}, basis::Basis, states::Vector{Vector{S}}) where {F<:AbstractFloat, S<:AbstractState}
-#     for (n, state) in enumerate(ACEConfig.(states))
-#         A = evaluate(basis.basis, state)
-#         B = _evaluate_real(A)
-#         values[n][:, :] .= (basis.coefficients' * B) + basis.mean
-#     end
-# end
 
 
 # Construct and fill a matrix with the results of a single state
@@ -398,69 +340,6 @@ function predict(basis::Basis, states::Vector{Vector{S}}) where S<:AbstractState
     predict!(values, basis, states)
     return values
 end
-
-"""
-# Todo
-- Remove hardcoded matrix type.
-- The indices of i & j will need to be swapped if zᵢ > zⱼ and the matrix transposed.
-- Currently this only works for off-site blocks and thus requires refactorisation.
-- Not sure how well this would work with complex numbers.
-"""
-# function predict_3(model::Model, atoms::Atoms, i::I, j::I) where I<:Integer
-#     basis_def = model.basis_definition
-#     zₛ = getfield.(atoms.Z, :z)
-#     zᵢ, zⱼ = zₛ[i], zₛ[j]
-#     noᵢ, noⱼ = number_of_orbitals(zᵢ, basis_def), number_of_orbitals(zⱼ, basis_def)
-#     @assert zᵢ == zⱼ "Hetro-atomic blocks are not currently supported"
-#     @assert i != j "On-site blocks are not currently supported"
-
-#     matrix = Matrix{Float64}(undef, noᵢ, noⱼ)
-
-#     matrix .= 0.0 # Debugging
-
-#     shellsᵢ = basis_def[zᵢ]
-#     shellsⱼ = basis_def[zⱼ]
-#     n_shellsᵢ = length(shellsᵢ)
-#     n_shellsⱼ = length(shellsⱼ)
-
-#     # Get the bond state
-#     current_envelope = CylindricalBondEnvelope(18.0,10.0,10.0) ###########
-#     # current_envelope = nothing
-#     bond_state = nothing
-#     bond_state_r = nothing
-
-#     # Will be replaced with something more efficient later on
-#     n_orbsᵢ = shellsᵢ * 2 .+ 1
-#     n_orbsⱼ = shellsⱼ * 2 .+ 1
-
-#     sub_blocksᵢ = UnitRange{Int64}[i-j+1:i for (i, j) in zip(cumsum(n_orbsᵢ), n_orbsᵢ)]
-#     sub_blocksⱼ = UnitRange{Int64}[i-j+1:i for (i, j) in zip(cumsum(n_orbsⱼ), n_orbsⱼ)]
-#     for sᵢ in 1:n_shellsᵢ, sⱼ in 1:n_shellsⱼ
-
-#         zᵢ == zⱼ && sᵢ > sⱼ && continue
-
-#         basis = model.off_site_models[(zᵢ, zⱼ, sᵢ, sⱼ)]
-
-#         # Check if the bond states need to be updated
-#         if envelope(basis) != current_envelope
-#             # current_envelope = envelope(basis)
-#             bond_state = get_states(i, j, atoms, current_envelope)
-#             bond_state_r = reverse.(bond_state)
-#         end
-        
-#         @views sub_block = matrix[sub_blocksᵢ[sᵢ], sub_blocksⱼ[sⱼ]]
-#         predict!(sub_block, basis, bond_state)
-
-#         if zᵢ == zⱼ && sᵢ != sⱼ
-#             # Parity induced sign flipping is not required as its effects are
-#             # accounted for by the reversed bond state. 
-#             @views sub_block = matrix[sub_blocksⱼ[sⱼ], sub_blocksᵢ[sᵢ]]'
-#             predict!(sub_block, basis, bond_state_r)
-#         end
-
-#     end
-#     return matrix
-# end
 
 """
 # Todo
@@ -561,3 +440,111 @@ end
 end
 
 
+
+
+
+"""
+# Todo
+- Remove hardcoded matrix type.
+- The indices of i & j will need to be swapped if zᵢ > zⱼ and the matrix transposed.
+- Currently this only works for off-site blocks and thus requires refactorisation.
+- Not sure how well this would work with complex numbers.
+"""
+# function predict_3(model::Model, atoms::Atoms, i::I, j::I) where I<:Integer
+#     basis_def = model.basis_definition
+#     zₛ = getfield.(atoms.Z, :z)
+#     zᵢ, zⱼ = zₛ[i], zₛ[j]
+#     noᵢ, noⱼ = number_of_orbitals(zᵢ, basis_def), number_of_orbitals(zⱼ, basis_def)
+#     @assert zᵢ == zⱼ "Hetro-atomic blocks are not currently supported"
+#     @assert i != j "On-site blocks are not currently supported"
+
+#     matrix = Matrix{Float64}(undef, noᵢ, noⱼ)
+
+#     matrix .= 0.0 # Debugging
+
+#     shellsᵢ = basis_def[zᵢ]
+#     shellsⱼ = basis_def[zⱼ]
+#     n_shellsᵢ = length(shellsᵢ)
+#     n_shellsⱼ = length(shellsⱼ)
+
+#     # Get the bond state
+#     current_envelope = CylindricalBondEnvelope(18.0,10.0,10.0) ###########
+#     # current_envelope = nothing
+#     bond_state = nothing
+#     bond_state_r = nothing
+
+#     # Will be replaced with something more efficient later on
+#     n_orbsᵢ = shellsᵢ * 2 .+ 1
+#     n_orbsⱼ = shellsⱼ * 2 .+ 1
+
+#     sub_blocksᵢ = UnitRange{Int64}[i-j+1:i for (i, j) in zip(cumsum(n_orbsᵢ), n_orbsᵢ)]
+#     sub_blocksⱼ = UnitRange{Int64}[i-j+1:i for (i, j) in zip(cumsum(n_orbsⱼ), n_orbsⱼ)]
+#     for sᵢ in 1:n_shellsᵢ, sⱼ in 1:n_shellsⱼ
+
+#         zᵢ == zⱼ && sᵢ > sⱼ && continue
+
+#         basis = model.off_site_models[(zᵢ, zⱼ, sᵢ, sⱼ)]
+
+#         # Check if the bond states need to be updated
+#         if envelope(basis) != current_envelope
+#             # current_envelope = envelope(basis)
+#             bond_state = get_states(i, j, atoms, current_envelope)
+#             bond_state_r = reverse.(bond_state)
+#         end
+        
+#         @views sub_block = matrix[sub_blocksᵢ[sᵢ], sub_blocksⱼ[sⱼ]]
+#         predict!(sub_block, basis, bond_state)
+
+#         if zᵢ == zⱼ && sᵢ != sⱼ
+#             # Parity induced sign flipping is not required as its effects are
+#             # accounted for by the reversed bond state. 
+#             @views sub_block = matrix[sub_blocksⱼ[sⱼ], sub_blocksᵢ[sᵢ]]'
+#             predict!(sub_block, basis, bond_state_r)
+#         end
+
+#     end
+#     return matrix
+# end
+
+
+# # Fill a tensor with the results of multiple states
+# function predict!(values::Array{F, 3}, basis::T, states::Vector{Vector{S}}) where {F<:AbstractFloat, T<:Basis, S<:AbstractState}
+#     for (n, state) in enumerate(ACEConfig.(states))
+#         A = evaluate(basis.basis, state)
+#         B = _evaluate_real(A)
+#         values[n, :, :] = (basis.coefficients' * B) + basis.mean
+#         if T<:AnisoBasis
+#             A = evaluate(basis.basis_i, ACEConfig(inv.(state)))
+#             B = _evaluate_real(A)
+#             values[n, :, :] .= (values[n, :, :] + ((basis.coefficients_i' * B) + basis.mean_i)') / 2.0
+#         end
+#     end
+# end
+
+
+# Fill multiple arrays with the results from multiple states
+# This is used when filling sub-arrays; this is an important function and should be
+# completely rewritten at a latter date.
+# function predict!(values::Vector{Any}, basis::T, states::Vector{Vector{S}}) where {T<:Basis, S<:AbstractState}
+#     for (n, state) in enumerate(ACEConfig.(states))
+#         A = evaluate(basis.basis, state)
+#         B = _evaluate_real(A)
+#         values[n][:, :] .= (basis.coefficients' * B) + basis.mean
+#         if T<:AnisoBasis
+#             A = evaluate(basis.basis_i, ACEConfig(inv.(state)))
+#             B = _evaluate_real(A)
+#             values[n][:, :] .= (values[n][:, :] + ((basis.coefficients_i' * B) + basis.mean_i)') / 2.0
+#         end
+#     end
+# end
+
+
+# Fill a vector of matrices with the results from multiple states.
+# This is only included for compatibility and should eventual be removed.
+# function predict!(values::Vector{Matrix{F}}, basis::Basis, states::Vector{Vector{S}}) where {F<:AbstractFloat, S<:AbstractState}
+#     for (n, state) in enumerate(ACEConfig.(states))
+#         A = evaluate(basis.basis, state)
+#         B = _evaluate_real(A)
+#         values[n][:, :] .= (basis.coefficients' * B) + basis.mean
+#     end
+# end

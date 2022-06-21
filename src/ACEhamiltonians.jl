@@ -37,8 +37,8 @@ include("predict.jl")
 include("dictionary.jl")
 @reexport using ACEhamiltonians.Dictionary
 
-include("interface.jl")
-@reexport using ACEhamiltonians.Interface
+# include("interface.jl")
+# @reexport using ACEhamiltonians.Interface
 
 include("tools.jl")
 
