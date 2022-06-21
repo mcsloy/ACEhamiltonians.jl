@@ -222,7 +222,7 @@ possible that species beyond this distances may be returned. This is because the
 neighbour list is cached by the `Atoms` object to improve performance.
 """
 function get_states(i::I, j::I, atoms::Atoms, envelope::CylindricalBondEnvelope, image::Union{AbstractArray{I}, Nothing}=nothing) where {I<:Integer}
-    @warn "Extracellular atoms are not currently wrapped!" maxlog=1
+
     # Warning this assumes that positions are correctly wrapped in the cell.
 
     # Check whether or not we want the bond rr0 to be from atom 1 to 2 or from
@@ -286,7 +286,7 @@ function get_states(i::I, j::I, atoms::Atoms, envelope::CylindricalBondEnvelope,
             else
                 # If the atom lies exactly at the bond origin, then offset it along the bond
                 # vector in the direction of the atom with the lowest atomic index, or if both
-                # are the same then atom i. This ensures the offset is consistent and reproducable.
+                # are the same then atom i. This ensures the offset is consistent and reproducible.
                 o = i <= j ? -1 : 1
                 vec = normalize(rr0) * 0.08 * o
             end
