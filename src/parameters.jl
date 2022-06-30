@@ -617,18 +617,6 @@ end
 # specified parameters can be collected and checked.
 
 # ╭─────────┬────────────╮
-# │ ParaSet │ Definition │
-# ╰─────────┴────────────╯
-"""
-`ParaSet` instances are structures which collect all the required parameter definitions
-for a given interaction type in once place. Once instantiated, the `OnSiteParaSet` and
-`OffSiteParaSet` structures should contain all parameters required to construct all of
-the desired on/off-site bases.
-"""
-abstract type ParaSet end
-
-
-"""
     OnSiteParaSet(ν, deg, e_cut_out, e_cut_in)
 
 This structure holds all the `Params` instances required to construct the on-site
